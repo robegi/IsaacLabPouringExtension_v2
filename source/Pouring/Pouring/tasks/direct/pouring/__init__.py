@@ -13,7 +13,7 @@ from . import agents
 
 
 gym.register(
-    id="Template-Pouring-Direct-v0",
+    id="Isaac-Franka-Pouring-Direct-v0",
     entry_point=f"{__name__}.pouring_env:PouringEnv",
     disable_env_checker=True,
     kwargs={
