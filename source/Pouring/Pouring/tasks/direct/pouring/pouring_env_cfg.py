@@ -11,6 +11,10 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 
+# Custom imports
+from .fluid_object import FluidObjectCfg, FluidObject
+from pxr import Gf
+
 
 @configclass
 class PouringEnvCfg(DirectRLEnvCfg):
@@ -46,3 +50,19 @@ class PouringEnvCfg(DirectRLEnvCfg):
     # - reset states/conditions
     initial_pole_angle_range = [-0.25, 0.25]  # pole angle sample range on reset [rad]
     max_cart_pos = 3.0  # reset if cart exceeds this position [m]
+
+    # fluid object
+    spawn_pos_fluid = Gf.Vec3f(0.0, 0, 1)  # Lower position for the spawn
+
+    # Add liquid configuration parameters
+    # Direct spawn
+    liquidCfg = FluidObjectCfg()
+    liquidCfg.numParticlesX = 2
+    liquidCfg.numParticlesY = 2
+    liquidCfg.numParticlesZ = 2
+    liquidCfg.density = 0.0
+    liquidCfg.particle_mass = 0.001
+    liquidCfg.particleSpacing = 0.05
+    liquidCfg.viscosity = 0.91
+
+
