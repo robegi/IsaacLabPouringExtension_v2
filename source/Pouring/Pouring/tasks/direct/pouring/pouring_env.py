@@ -19,7 +19,14 @@ from .pouring_env_cfg import PouringEnvCfg
 
 # Custom imports
 from .fluid_object import FluidObject, FluidObjectCfg
-
+import omni
+import omni.physics.tensors.impl.api as tensors
+from isaaclab.sim.utils import get_current_stage_id
+from isaacsim.core.simulation_manager import SimulationManager
+from omni.physx import acquire_physx_interface
+import carb
+import pdb
+from isaacsim.core.simulation_manager import SimulationManager
 
 class PouringEnv(DirectRLEnv):
     cfg: PouringEnvCfg
@@ -30,11 +37,19 @@ class PouringEnv(DirectRLEnv):
         self._cart_dof_idx, _ = self.robot.find_joints(self.cfg.cart_dof_name)
         self._pole_dof_idx, _ = self.robot.find_joints(self.cfg.pole_dof_name)
 
-        self.joint_pos = self.robot.data.joint_pos
-        self.joint_vel = self.robot.data.joint_vel
+        self.joint_pos = self.robot.data.joint_pos.to(self.device)
+        self.joint_vel = self.robot.data.joint_vel.to(self.device)
+
+        # self._carb_settings = carb.settings.get_settings()
+        # self._carb_settings.set_bool("/physics/suppressReadback", True)
+        
+        pass
+
 
     def _setup_scene(self):
+
         self.robot = Articulation(self.cfg.robot_cfg)
+
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         # clone and replicate
@@ -52,12 +67,28 @@ class PouringEnv(DirectRLEnv):
         self.liquid = FluidObject(cfg=self.cfg.liquidCfg, lower_pos=self.cfg.spawn_pos_fluid)
         self.liquid.spawn_fluid_direct()
 
+        # spawn a green cone with colliders and rigid body
+        cfg_cone_rigid = sim_utils.ConeCfg(
+            radius=0.15,
+            height=0.5,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+        )
+        cfg_cone_rigid.func(
+            "/World/Objects/ConeRigid", cfg_cone_rigid, translation=(-0., 2.0, 0.0), orientation=(0.5, 0.0, 0.5, 0.0)
+        )
+
+
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self.actions = actions.clone()
+        # self.actions = actions.clone()
+        pass
 
     def _apply_action(self) -> None:
-        self.robot.set_joint_effort_target(self.actions * self.cfg.action_scale, joint_ids=self._cart_dof_idx)
+        # self.robot.set_joint_effort_target(self.actions * self.cfg.action_scale, joint_ids=self._cart_dof_idx)
+        pass
 
     def _get_observations(self) -> dict:
         obs = torch.cat(
@@ -71,9 +102,9 @@ class PouringEnv(DirectRLEnv):
         )
         observations = {"policy": obs}
 
-        # # Check particles
-        # particle_pos, particle_vel = self.liquid.get_particles_position(0)
-        # print(particle_pos)
+        # Check particles
+        particle_pos = self.liquid.get_particles_position()
+        print(particle_pos)
 
         return observations
 
@@ -90,6 +121,7 @@ class PouringEnv(DirectRLEnv):
             self.joint_vel[:, self._cart_dof_idx[0]],
             self.reset_terminated,
         )
+        total_reward = 1.0 * torch.ones(self.num_envs, device=self.device)
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -114,16 +146,19 @@ class PouringEnv(DirectRLEnv):
             joint_pos.device,
         )
         joint_vel = self.robot.data.default_joint_vel[env_ids]
-
+        
         default_root_state = self.robot.data.default_root_state[env_ids]
         default_root_state[:, :3] += self.scene.env_origins[env_ids]
 
         self.joint_pos[env_ids] = joint_pos
         self.joint_vel[env_ids] = joint_vel
-
+        
         self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+
+        # Resets fluid
+        self.liquid.set_particles_position(self.liquid.initial_particles_pos, env_id=env_ids)
 
 
 @torch.jit.script
