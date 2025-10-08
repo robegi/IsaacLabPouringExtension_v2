@@ -27,6 +27,7 @@ from omni.physx import acquire_physx_interface
 import carb
 import pdb
 from isaacsim.core.simulation_manager import SimulationManager
+from isaaclab.sim import SimulationContext
 
 class PouringEnv(DirectRLEnv):
     cfg: PouringEnvCfg
@@ -39,9 +40,6 @@ class PouringEnv(DirectRLEnv):
 
         self.joint_pos = self.robot.data.joint_pos.to(self.device)
         self.joint_vel = self.robot.data.joint_vel.to(self.device)
-
-        # self._carb_settings = carb.settings.get_settings()
-        # self._carb_settings.set_bool("/physics/suppressReadback", True)
         
         pass
 
@@ -49,6 +47,11 @@ class PouringEnv(DirectRLEnv):
     def _setup_scene(self):
 
         self.robot = Articulation(self.cfg.robot_cfg)
+
+        # Set partial rendering
+        Sim_Context = SimulationContext()
+        rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
+        Sim_Context.set_render_mode(mode=rendermode)
 
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
@@ -104,7 +107,7 @@ class PouringEnv(DirectRLEnv):
 
         # Check particles
         particle_pos = self.liquid.get_particles_position()
-        print(particle_pos)
+        # print(particle_pos)
 
         return observations
 
