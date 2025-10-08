@@ -43,7 +43,7 @@ class PouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
+        rendermode = Sim_Context.RenderMode.FULL_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -138,10 +138,11 @@ class PouringEnv(DirectRLEnv):
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
         # Reset liquid particles position and velocity
-        self.liquid.set_particles_position(self.liquid.initial_particles_pos,
-                                           self.liquid.initial_particles_vel,
-                                            env_ids[0],
-            )
+        for i in env_ids:
+            self.liquid.set_particles_position(self.liquid.initial_particles_pos,
+                                            self.liquid.initial_particles_vel,
+                                                i,
+                )
 
 
 @torch.jit.script
