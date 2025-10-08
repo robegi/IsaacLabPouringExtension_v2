@@ -20,6 +20,7 @@ from .pouring_env_cfg import PouringEnvCfg
 # Custom imports
 from .fluid_object import FluidObject, FluidObjectCfg
 from omni.physx import acquire_physx_interface
+from isaaclab.sim import SimulationContext 
 
 
 class PouringEnv(DirectRLEnv):
@@ -39,6 +40,11 @@ class PouringEnv(DirectRLEnv):
         # Force GPU dynamics to simulate liquids
         physx_interface = acquire_physx_interface()
         physx_interface.overwrite_gpu_setting(1)
+
+        # Set partial rendering
+        Sim_Context = SimulationContext()
+        rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
+        Sim_Context.set_render_mode(mode=rendermode)
 
         self.robot = Articulation(self.cfg.robot_cfg)
         # add ground plane
