@@ -141,7 +141,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, expe
     env_cfg.seed = experiment_cfg["seed"]
 
     # Custom cfg options
-    env_cfg.use_fabric = not args_cli.disable_fabric
+    env_cfg.sim.use_fabric = not args_cli.disable_fabric
 
     # specify directory for logging experiments (load checkpoint)
     log_root_path = os.path.join("logs", "skrl", experiment_cfg["agent"]["experiment"]["directory"])
