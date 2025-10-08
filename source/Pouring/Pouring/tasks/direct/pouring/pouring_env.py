@@ -19,6 +19,7 @@ from .pouring_env_cfg import PouringEnvCfg
 
 # Custom imports
 from .fluid_object import FluidObject, FluidObjectCfg
+from omni.physx import acquire_physx_interface
 
 
 class PouringEnv(DirectRLEnv):
@@ -34,6 +35,11 @@ class PouringEnv(DirectRLEnv):
         self.joint_vel = self.robot.data.joint_vel
 
     def _setup_scene(self):
+
+        # Force GPU dynamics to simulate liquids
+        physx_interface = acquire_physx_interface()
+        physx_interface.overwrite_gpu_setting(1)
+
         self.robot = Articulation(self.cfg.robot_cfg)
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
@@ -124,6 +130,12 @@ class PouringEnv(DirectRLEnv):
         self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+
+        # Reset liquid particles position and velocity
+        self.liquid.set_particles_position(self.liquid.initial_particles_pos,
+                                           self.liquid.initial_particles_vel,
+                                            env_ids[0],
+            )
 
 
 @torch.jit.script

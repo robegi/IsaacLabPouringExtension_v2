@@ -52,17 +52,17 @@ class PouringEnvCfg(DirectRLEnvCfg):
     max_cart_pos = 3.0  # reset if cart exceeds this position [m]
 
     # fluid object
-    spawn_pos_fluid = Gf.Vec3f(0.0, 0, 1)  # Lower position for the spawn
+    spawn_pos_fluid = Gf.Vec3f(0.0, 0, 3)  # Lower position for the spawn
 
     # Add liquid configuration parameters
     # Direct spawn
     liquidCfg = FluidObjectCfg()
-    liquidCfg.numParticlesX = 2
-    liquidCfg.numParticlesY = 2
-    liquidCfg.numParticlesZ = 2
+    liquidCfg.numParticlesX = 5
+    liquidCfg.numParticlesY = 5
+    liquidCfg.numParticlesZ = 10
     liquidCfg.density = 0.0
     liquidCfg.particle_mass = 0.001
-    liquidCfg.particleSpacing = 0.05
+    liquidCfg.particleSpacing = 0.01
     liquidCfg.viscosity = 0.91
 
 

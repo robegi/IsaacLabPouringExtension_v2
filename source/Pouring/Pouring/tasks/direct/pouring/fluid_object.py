@@ -110,7 +110,8 @@ class FluidObject():
             # visibility_attribute = self.particlesPrim.GetVisibilityAttr()
             # visibility_attribute.Set("invisible")
 
-            pass
+            # Get the particles' initial positions and velocities
+            self.initial_particles_pos, self.initial_particles_vel = self.get_particles_position(env_index)
 
 
     def get_particles_position(self, env_id: int)->tuple[np.array, np.array]:
