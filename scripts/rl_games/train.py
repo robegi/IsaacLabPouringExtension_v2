@@ -38,6 +38,12 @@ parser.add_argument(
     const=True,
     help="if toggled, this experiment will be tracked with Weights and Biases",
 )
+
+# Custom args
+parser.add_argument(
+    "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
+)
+
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -118,6 +124,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the environment seed (after multi-gpu config for updated rank from agent seed)
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg["params"]["seed"]
+
+    # Custom cfg options
+    env_cfg.use_fabric = not args_cli.disable_fabric
 
     # specify directory for logging experiments
     config_name = agent_cfg["params"]["config"]["name"]
