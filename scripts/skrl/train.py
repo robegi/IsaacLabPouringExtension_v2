@@ -140,8 +140,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg["seed"]
 
     # Custom cfg options
-    env_cfg.use_fabric = not args_cli.disable_fabric
-
+    env_cfg.sim.use_fabric = not args_cli.disable_fabric
+      
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"])
     log_root_path = os.path.abspath(log_root_path)
