@@ -70,27 +70,15 @@ class PouringEnv(DirectRLEnv):
         self.liquid = FluidObject(cfg=self.cfg.liquidCfg, lower_pos=self.cfg.spawn_pos_fluid)
         self.liquid.spawn_fluid_direct()
 
-        # spawn a green cone with colliders and rigid body
-        cfg_cone_rigid = sim_utils.ConeCfg(
-            radius=0.15,
-            height=0.5,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
-        )
-        cfg_cone_rigid.func(
-            "/World/Objects/ConeRigid", cfg_cone_rigid, translation=(-0., 2.0, 0.0), orientation=(0.5, 0.0, 0.5, 0.0)
-        )
-
+        
 
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        # self.actions = actions.clone()
+        self.actions = actions.clone()
         pass
 
     def _apply_action(self) -> None:
-        # self.robot.set_joint_effort_target(self.actions * self.cfg.action_scale, joint_ids=self._cart_dof_idx)
+        self.robot.set_joint_effort_target(self.actions * self.cfg.action_scale, joint_ids=self._cart_dof_idx)
         pass
 
     def _get_observations(self) -> dict:
