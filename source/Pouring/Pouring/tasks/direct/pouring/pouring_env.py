@@ -50,7 +50,7 @@ class PouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
+        rendermode = Sim_Context.RenderMode.FULL_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # add ground plane
@@ -149,7 +149,8 @@ class PouringEnv(DirectRLEnv):
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
         # Resets fluid
-        self.liquid.set_particles_position(self.liquid.initial_particles_pos, env_id=env_ids)
+        for i in env_ids:
+            self.liquid.set_particles_position(self.liquid.initial_particles_pos, env_id=i)
 
 
 @torch.jit.script
