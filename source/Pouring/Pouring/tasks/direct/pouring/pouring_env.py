@@ -48,18 +48,21 @@ class PouringEnv(DirectRLEnv):
 
         self.robot = Articulation(self.cfg.robot_cfg)
 
+        # Use device without forcing anything
+        physx_interface = acquire_physx_interface()
+        physx_interface.overwrite_gpu_setting(-1)
+
         # Set partial rendering
-        Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.FULL_RENDERING
-        Sim_Context.set_render_mode(mode=rendermode)
+        # Sim_Context = SimulationContext()
+        # rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
+        # Sim_Context.set_render_mode(mode=rendermode)
 
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
-        # we need to explicitly filter collisions for CPU simulation
-        if self.device == "cpu":
-            self.scene.filter_collisions(global_prim_paths=[])
+        # Need to explicitly filter collisions after cloning envs
+        self.scene.filter_collisions(global_prim_paths=[])
         # add articulation to scene
         self.scene.articulations["robot"] = self.robot
         # add lights
@@ -112,7 +115,7 @@ class PouringEnv(DirectRLEnv):
             self.joint_vel[:, self._cart_dof_idx[0]],
             self.reset_terminated,
         )
-        total_reward = 1.0 * torch.ones(self.num_envs, device=self.device)
+        
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -148,7 +151,7 @@ class PouringEnv(DirectRLEnv):
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
-        # Resets fluid
+        # # Resets fluid
         for i in env_ids:
             self.liquid.set_particles_position(self.liquid.initial_particles_pos, env_id=i)
 

@@ -48,17 +48,17 @@ class PouringEnvCfg(DirectRLEnvCfg):
     rew_scale_cart_vel = -0.01
     rew_scale_pole_vel = -0.005
     # - reset states/conditions
-    initial_pole_angle_range = [-0.1, 0.1]  # pole angle sample range on reset [rad]
-    max_cart_pos = 3.0  # reset if cart exceeds this position [m]
+    initial_pole_angle_range = [-0.25, 0.25]  # pole angle sample range on reset [rad]
+    max_cart_pos = 6.0  # reset if cart exceeds this position [m]
 
     # fluid object
-    spawn_pos_fluid = Gf.Vec3f(0.0, 0.0, 4)  # Lower position for the spawn
+    spawn_pos_fluid = Gf.Vec3f(0.0, 0.0, 4.0)  # Lower position for the spawn
 
     # Add liquid configuration parameters
     # Direct spawn
     liquidCfg = FluidObjectCfg()
-    liquidCfg.numParticlesX = 10
-    liquidCfg.numParticlesY = 10
+    liquidCfg.numParticlesX = 5
+    liquidCfg.numParticlesY = 5
     liquidCfg.numParticlesZ = 10
     liquidCfg.density = 1.
     liquidCfg.particle_mass = 1.
