@@ -18,16 +18,10 @@ from isaaclab.utils.math import sample_uniform
 from .pouring_env_cfg import PouringEnvCfg
 
 # Custom imports
-from .fluid_object import FluidObject, FluidObjectCfg
-import omni
-import omni.physics.tensors.impl.api as tensors
-from isaaclab.sim.utils import get_current_stage_id
-from isaacsim.core.simulation_manager import SimulationManager
+from .fluid_object import FluidObject
 from omni.physx import acquire_physx_interface
 import carb
-import pdb
-from isaacsim.core.simulation_manager import SimulationManager
-from isaaclab.sim import SimulationContext
+from isaaclab.assets import RigidObject
 
 class PouringEnv(DirectRLEnv):
     cfg: PouringEnvCfg
@@ -35,27 +29,33 @@ class PouringEnv(DirectRLEnv):
     def __init__(self, cfg: PouringEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        self._cart_dof_idx, _ = self.robot.find_joints(self.cfg.cart_dof_name)
-        self._pole_dof_idx, _ = self.robot.find_joints(self.cfg.pole_dof_name)
+        # create auxiliary variables for computing applied action, observations and rewards
+        self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :7, 0].to(device=self.device)
+        self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :7, 1].to(device=self.device)
+        self.dt = self.cfg.sim.dt * self.cfg.decimation
 
-        self.joint_pos = self.robot.data.joint_pos.to(self.device)
-        self.joint_vel = self.robot.data.joint_vel.to(self.device)
+        self.robot_dof_speed_scales = torch.ones((self.num_envs, self._robot.num_joints - 2), device=self.device)
         
-        pass
+        # Initial joint target is the starting position
+        self.robot_dof_targets = torch.tensor(list(self.cfg.robot.init_state.joint_pos.values()), device=self.device)[:7]
+
+        self._robot_arm_idx, _ = self._robot.find_joints(self.cfg.robot_arm_names)
+        self._robot_finger_idx = self._robot.find_joints(self.cfg.robot_finger_names)
+
+        self.action_constraints_low = torch.tensor([-0.3, -math.pi], device=self.device)
+        self.action_constraints_high = torch.tensor([0.3, 0], device=self.device)
+        
 
 
     def _setup_scene(self):
-
-        self.robot = Articulation(self.cfg.robot_cfg)
 
         # Use device without forcing anything
         physx_interface = acquire_physx_interface()
         physx_interface.overwrite_gpu_setting(-1)
 
-        # Set partial rendering
-        # Sim_Context = SimulationContext()
-        # rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
-        # Sim_Context.set_render_mode(mode=rendermode)
+        # Set translucency to render transparent materials
+        settings = carb.settings.get_settings()
+        settings.set("/rtx/translucency/enabled", True)
 
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
@@ -63,97 +63,109 @@ class PouringEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         # Need to explicitly filter collisions after cloning envs
         self.scene.filter_collisions(global_prim_paths=[])
-        # add articulation to scene
-        self.scene.articulations["robot"] = self.robot
-        # add lights
+        # add lights 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        # Liquid, spawns it and gets the initial positions and velocities
+        # Robot
+        self._robot = Articulation(self.cfg.robot)
+        self.scene.articulations["robot"] = self._robot
+
+        # Liquid
         self.liquid = FluidObject(cfg=self.cfg.liquidCfg, lower_pos=self.cfg.spawn_pos_fluid)
         self.liquid.spawn_fluid_direct()
 
+        # # Initial particle position, from saved file
+        self.liquid_init_pos = list()
+        self.liquid_init_vel = list()
+
+        for i in range(len(self.cfg.particles_init_pos_list)):
+            self.liquid_init_pos.append(torch.load(f"{self.cfg.CURRENT_PATH}/usd_models/{self.cfg.particles_init_pos_list[i]}.pt").cuda())
+            self.liquid_init_pos[i] += torch.ones_like(self.liquid_init_pos[i], device=self.device)*torch.tensor([0, 0, 0.01], device=self.device)
+            self.liquid_init_vel.append(torch.zeros_like(self.liquid_init_pos[i], device=self.device))
+
+        # Reward and observations
+        self.reward = torch.zeros((self.num_envs)).to(self.device)
+        self.obs_reward_in = torch.zeros((self.num_envs)).to(self.device)
+        self.obs_reward_out = torch.zeros((self.num_envs)).to(self.device)
+        self.particle_fraction_in = torch.zeros((self.num_envs,1)).to(self.device)
+        self.particle_fraction_out = torch.zeros((self.num_envs,1)).to(self.device)
         
+        # Glass, position it before the robot
+        self._glass = RigidObject(self.cfg.glass)
+        self.scene.rigid_objects["glass"] = self._glass
+
+        # Container
+        self._container = RigidObject(self.cfg.container)
+        self.scene.rigid_objects["container"] = self._container
+
+        # Robot
+        self._robot = Articulation(self.cfg.robot)
+        self.scene.articulations["robot"] = self._robot
+
+        # Target on the finger actuators to hold the glass
+        self.ee_start = torch.tensor([0.4, 0.4], device=self.device).unsqueeze(0) # Initial finger position for resetting
+        self.ee_target = torch.zeros((self.num_envs, 2), device = self.device)  
+
+        # Initial joint target is the starting position
+        self.robot_dof_targets = torch.tensor(list(self._robot.cfg.init_state.joint_pos.values()), device=self.device)
 
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self.actions = actions.clone()
-        pass
+        self.actions = actions.clone().clamp(-1.0, 1.0)
+        targets = self.robot_dof_targets + self.robot_dof_speed_scales * self.dt * self.actions * self.cfg.action_scale
+        self.robot_dof_targets = torch.clamp(targets, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
 
     def _apply_action(self) -> None:
-        self.robot.set_joint_effort_target(self.actions * self.cfg.action_scale, joint_ids=self._cart_dof_idx)
-        pass
+        self._robot.set_joint_position_target(self.robot_dof_targets, joint_ids=self._robot_arm_idx)
+        self._robot.set_joint_position_target(self.ee_target, joint_ids=self._robot_finger_idx[0])
+        
 
     def _get_observations(self) -> dict:
-        obs = torch.cat(
-            (
-                self.joint_pos[:, self._pole_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_vel[:, self._pole_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_pos[:, self._cart_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_vel[:, self._cart_dof_idx[0]].unsqueeze(dim=1),
-            ),
-            dim=-1,
-        )
+        obs = torch.ones((self.num_envs, self.cfg.observation_space), device=self.device)
         observations = {"policy": obs}
-
-        # Check particles
-        particle_pos = self.liquid.get_particles_position()
-        # print(particle_pos)
 
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        total_reward = compute_rewards(
-            self.cfg.rew_scale_alive,
-            self.cfg.rew_scale_terminated,
-            self.cfg.rew_scale_pole_pos,
-            self.cfg.rew_scale_cart_vel,
-            self.cfg.rew_scale_pole_vel,
-            self.joint_pos[:, self._pole_dof_idx[0]],
-            self.joint_vel[:, self._pole_dof_idx[0]],
-            self.joint_pos[:, self._cart_dof_idx[0]],
-            self.joint_vel[:, self._cart_dof_idx[0]],
-            self.reset_terminated,
-        )
+        total_reward = torch.zeros((self.num_envs), device=self.device).unsqueeze(1)
         
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        self.joint_pos = self.robot.data.joint_pos
-        self.joint_vel = self.robot.data.joint_vel
-
-        time_out = self.episode_length_buf >= self.max_episode_length - 1
-        out_of_bounds = torch.any(torch.abs(self.joint_pos[:, self._cart_dof_idx]) > self.cfg.max_cart_pos, dim=1)
-        out_of_bounds = out_of_bounds | torch.any(torch.abs(self.joint_pos[:, self._pole_dof_idx]) > math.pi / 2, dim=1)
-        return out_of_bounds, time_out
+        terminated = False
+        truncated = self.episode_length_buf >= self.max_episode_length - 1
+        return terminated, truncated
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
 
-        joint_pos = self.robot.data.default_joint_pos[env_ids]
-        joint_pos[:, self._pole_dof_idx] += sample_uniform(
-            self.cfg.initial_pole_angle_range[0] * math.pi,
-            self.cfg.initial_pole_angle_range[1] * math.pi,
-            joint_pos[:, self._pole_dof_idx].shape,
-            joint_pos.device,
-        )
-        joint_vel = self.robot.data.default_joint_vel[env_ids]
-        
-        default_root_state = self.robot.data.default_root_state[env_ids]
-        default_root_state[:, :3] += self.scene.env_origins[env_ids]
+        # Reset the robot and randomizes the initial position (to implement)
+        joint_pos = self._robot.data.default_joint_pos[env_ids]
+        joint_vel = torch.zeros_like(joint_pos)
+        joint_pos = torch.clamp(joint_pos[:,:7], self.robot_dof_lower_limits, self.robot_dof_upper_limits)
+        joint_pos = torch.cat((joint_pos, self.ee_start), dim=1)
+        self._robot.set_joint_position_target(joint_pos, env_ids=env_ids)
+        self._robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
-        self.joint_pos[env_ids] = joint_pos
-        self.joint_vel[env_ids] = joint_vel
-        
-        self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
-        self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
-        self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+         # Reset the glass
+        glass_init_pos = self._glass.data.default_root_state.clone()[env_ids]
+        glass_init_pos[:,:3] = glass_init_pos[:,:3] + self.scene.env_origins[env_ids]
+        self._glass.write_root_state_to_sim(glass_init_pos,env_ids=env_ids)
+
+        # Reset the container
+        container_init_pos = self._container.data.default_root_state.clone()[env_ids]
+        container_init_pos[:,:3] = container_init_pos[:,:3] + self.scene.env_origins[env_ids]
+        lower_bound = torch.tensor([0,-0.1,0],device=self.device)
+        upper_bound = torch.tensor([0,0.1,0],device=self.device)
+        container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
+        self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         # # Resets fluid
         for i in env_ids:
-            self.liquid.set_particles_position(self.liquid.initial_particles_pos, env_id=i)
+            self.liquid.set_particles_position(env_id = i)
 
 
 @torch.jit.script
