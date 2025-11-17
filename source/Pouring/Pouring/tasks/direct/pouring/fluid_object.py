@@ -158,6 +158,7 @@ class FluidObject():
 
             # Saves the particles' initial state
             self.initial_particles_pos = self.get_particles_position(env_index)
+            self.initial_particles_vel = self.get_particles_velocity(env_index)
 
 
     def get_particles_position(self, env_id: int = 0) -> torch.Tensor:
@@ -176,14 +177,19 @@ class FluidObject():
 
         return particles_vel
 
-    def set_particles_position(self, particles_pos: torch.tensor, particles_vel: Union[torch.tensor,None] = None, env_id: int = 0):
-        # Sets the particles' positions to the given array. Velocity set as zero by default
+    def set_particles_position(self, particles_pos: Union[torch.tensor, None] = None, particles_vel: Union[torch.tensor, None] = None, env_id: int = 0):
+        # Sets the particles' positions and velocities to the given array. Positions and velocity set as zero by default
         particles = UsdGeom.Points(self.stage.GetPrimAtPath(self.default_prim_path.AppendPath("envs/env_%d/particles" % env_id)))
-        particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(particles_pos.cpu().numpy()))
+
+        # Resets particles if given
+        if particles_pos is not None:
+            particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(particles_pos.cpu().numpy()))
+        else:
+            particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(self.initial_particles_pos.cpu().numpy()))
 
         # Resets velocities if given
         if particles_vel is not None:
             particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(particles_vel.cpu().numpy()))
         else:
-            particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(np.zeros_like(particles_pos.cpu().numpy())))
+            particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(self.initial_particles_vel.cpu().numpy()))
 
