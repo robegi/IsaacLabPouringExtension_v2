@@ -47,7 +47,7 @@ parser.add_argument(
 
 # Custom args
 parser.add_argument(
-    "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
+    "--enable_fabric", action="store_true", default=True, help="Disable fabric and use USD I/O operations."
 )
 
 # append AppLauncher cli args
@@ -140,7 +140,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg["seed"]
 
     # Custom cfg options
-    env_cfg.sim.use_fabric = not args_cli.disable_fabric
+    env_cfg.sim.use_fabric = not args_cli.enable_fabric
       
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "skrl", agent_cfg["agent"]["experiment"]["directory"])
