@@ -22,6 +22,7 @@ from isaaclab.assets import ArticulationCfg
 from isaaclab.assets import RigidObjectCfg
 import os
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
+from isaaclab.controllers import DifferentialIKControllerCfg
 
 
 @configclass
@@ -30,7 +31,7 @@ class PouringEnvCfg(DirectRLEnvCfg):
     decimation = 2
     episode_length_s = 10
     # - spaces definition
-    action_space = 7
+    action_space = 6
     observation_space = 1
     state_space = 0
 
@@ -101,8 +102,11 @@ class PouringEnvCfg(DirectRLEnvCfg):
     # Joint names of the fingers
     robot_finger_names = ["panda_finger_joint.*"]
 
+    # Controller configuration
+    diff_ik_cfg = DifferentialIKControllerCfg(command_type="pose", use_relative_mode=True, ik_method="dls")
+
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=4.0, replicate_physics=False)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2, env_spacing=4.0, replicate_physics=False)
 
 
     # Set Glass as rigid object
@@ -127,7 +131,6 @@ class PouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Set target container as rigid object
-
     # Container data from original usd model
     container_height = 0.12
     container_radius = 0.08/2

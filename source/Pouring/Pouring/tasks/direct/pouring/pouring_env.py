@@ -22,6 +22,11 @@ from .fluid_object import FluidObject
 from omni.physx import acquire_physx_interface
 import carb
 from isaaclab.assets import RigidObject
+from isaaclab.controllers import DifferentialIKController
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.markers import VisualizationMarkers
+from isaaclab.utils.math import subtract_frame_transforms
+from isaaclab.markers.config import FRAME_MARKER_CFG
 
 class PouringEnv(DirectRLEnv):
     cfg: PouringEnvCfg
@@ -32,12 +37,12 @@ class PouringEnv(DirectRLEnv):
         # create auxiliary variables for computing applied action, observations and rewards
         self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :7, 0].to(device=self.device)
         self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :7, 1].to(device=self.device)
+        self.robot_dof_speed_scales = torch.ones((self.num_envs, self._robot.num_joints - 2), device=self.device)
         self.dt = self.cfg.sim.dt * self.cfg.decimation
 
-        self.robot_dof_speed_scales = torch.ones((self.num_envs, self._robot.num_joints - 2), device=self.device)
-        
         # Initial joint target is the starting position
         self.robot_dof_targets = torch.tensor(list(self.cfg.robot.init_state.joint_pos.values()), device=self.device)[:7]
+
 
         self._robot_arm_idx, _ = self._robot.find_joints(self.cfg.robot_arm_names)
         self._robot_finger_idx = self._robot.find_joints(self.cfg.robot_finger_names)
@@ -70,6 +75,10 @@ class PouringEnv(DirectRLEnv):
         # Robot
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
+
+        # Controller
+        self.diff_ik_controller = DifferentialIKController(self.cfg.diff_ik_cfg, num_envs=self.num_envs, device=self.device)
+        self.first_setup = True
 
         # Liquid
         self.liquid = FluidObject(cfg=self.cfg.liquidCfg, lower_pos=self.cfg.spawn_pos_fluid)
@@ -110,14 +119,51 @@ class PouringEnv(DirectRLEnv):
         # Initial joint target is the starting position
         self.robot_dof_targets = torch.tensor(list(self._robot.cfg.init_state.joint_pos.values()), device=self.device)
 
+        # Marker on the end effector and the desired pose
+        frame_marker_cfg = FRAME_MARKER_CFG.copy()
+        frame_marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
+        self.ee_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_current"))
+        self.goal_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_goal"))
+
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self.actions = actions.clone().clamp(-1.0, 1.0)
-        targets = self.robot_dof_targets + self.robot_dof_speed_scales * self.dt * self.actions * self.cfg.action_scale
-        self.robot_dof_targets = torch.clamp(targets, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
+        self.actions = actions.clone().clamp(-0.01, 0.01)
+        ee_goal = self.actions
+        
+        ###
+        # IK controller (target)
+        ###
+        ee_pose_w = self._robot.data.body_pose_w[:, self.robot_entity_cfg.body_ids[0]]
+        root_pose_w = self._robot.data.root_pose_w
+        ee_pos_b, ee_quat_b = subtract_frame_transforms(
+            root_pose_w[:, 0:3], root_pose_w[:, 3:7], ee_pose_w[:, 0:3], ee_pose_w[:, 3:7]
+        )
+        self.diff_ik_controller.reset()
+        self.diff_ik_controller.set_command(ee_goal, ee_pos_b, ee_quat_b)    
+
+        # Markers
+        self.ee_marker.visualize(ee_pose_w[:, 0:3], ee_pose_w[:, 3:7])
+    
+
 
     def _apply_action(self) -> None:
-        self._robot.set_joint_position_target(self.robot_dof_targets, joint_ids=self._robot_arm_idx)
+        ###
+        # IK controller (step)
+        ###
+        # Get jacobian and current pose
+        jacobian = self._robot.root_physx_view.get_jacobians()[:, self.ee_jacobi_idx, :, self.robot_entity_cfg.joint_ids].to(self.device)
+        ee_pose_w = self._robot.data.body_pose_w[:, self.robot_entity_cfg.body_ids[0]]
+        root_pose_w = self._robot.data.root_pose_w
+        joint_pos = self._robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
+        
+        # compute frame in root frame
+        ee_pos_b, ee_quat_b = subtract_frame_transforms(
+            root_pose_w[:, 0:3], root_pose_w[:, 3:7], ee_pose_w[:, 0:3], ee_pose_w[:, 3:7]
+        )
+        # compute the joint commands
+        self.joint_pos_des = self.diff_ik_controller.compute(ee_pos_b, ee_quat_b, jacobian, joint_pos)
+
+        self._robot.set_joint_position_target(self.joint_pos_des, joint_ids=self._robot_arm_idx)
         self._robot.set_joint_position_target(self.ee_target, joint_ids=self._robot_finger_idx[0])
         
 
@@ -142,11 +188,21 @@ class PouringEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
 
+        # IK controller
+        if self.first_setup == True:
+            self.robot_entity_cfg = SceneEntityCfg("robot", joint_names=["panda_joint.*"], body_names=["panda_hand"])
+            self.robot_entity_cfg.resolve(self.scene)
+            self.ee_jacobi_idx = self.robot_entity_cfg.body_ids[0] - 1  # -1 because base link is counted
+            self.first_setup = False
+
+        # Reset controller
+        self.diff_ik_controller.reset()
+        
         # Reset the robot and randomizes the initial position (to implement)
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = torch.zeros_like(joint_pos)
         joint_pos = torch.clamp(joint_pos[:,:7], self.robot_dof_lower_limits, self.robot_dof_upper_limits)
-        joint_pos = torch.cat((joint_pos, self.ee_start), dim=1)
+        joint_pos = torch.cat((joint_pos, self.ee_start.expand([self.num_envs, -1])), dim=1)
         self._robot.set_joint_position_target(joint_pos, env_ids=env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
