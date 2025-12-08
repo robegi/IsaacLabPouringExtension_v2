@@ -35,14 +35,13 @@ class PouringEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         # create auxiliary variables for computing applied action, observations and rewards
-        self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :7, 0].to(device=self.device)
-        self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :7, 1].to(device=self.device)
-        self.robot_dof_speed_scales = torch.ones((self.num_envs, self._robot.num_joints - 2), device=self.device)
+        self.robot_joint_lower_limits = self._robot.data.soft_joint_pos_limits[0, :7, 0].to(device=self.device)
+        self.robot_joint_upper_limits = self._robot.data.soft_joint_pos_limits[0, :7, 1].to(device=self.device)
+        self.robot_joint_velocity_scale = 0.1
         self.dt = self.cfg.sim.dt * self.cfg.decimation
 
         # Initial joint target is the starting position
         self.robot_dof_targets = torch.tensor(list(self.cfg.robot.init_state.joint_pos.values()), device=self.device)[:7]
-
 
         self._robot_arm_idx, _ = self._robot.find_joints(self.cfg.robot_arm_names)
         self._robot_finger_idx = self._robot.find_joints(self.cfg.robot_finger_names)
@@ -72,6 +71,14 @@ class PouringEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
+        # Glass, position it before the robot
+        self._glass = RigidObject(self.cfg.glass)
+        self.scene.rigid_objects["glass"] = self._glass
+
+        # Container
+        self._container = RigidObject(self.cfg.container)
+        self.scene.rigid_objects["container"] = self._container
+
         # Robot
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
@@ -99,18 +106,6 @@ class PouringEnv(DirectRLEnv):
         self.obs_reward_out = torch.zeros((self.num_envs)).to(self.device)
         self.particle_fraction_in = torch.zeros((self.num_envs,1)).to(self.device)
         self.particle_fraction_out = torch.zeros((self.num_envs,1)).to(self.device)
-        
-        # Glass, position it before the robot
-        self._glass = RigidObject(self.cfg.glass)
-        self.scene.rigid_objects["glass"] = self._glass
-
-        # Container
-        self._container = RigidObject(self.cfg.container)
-        self.scene.rigid_objects["container"] = self._container
-
-        # Robot
-        self._robot = Articulation(self.cfg.robot)
-        self.scene.articulations["robot"] = self._robot
 
         # Target on the finger actuators to hold the glass
         self.ee_start = torch.tensor([0.4, 0.4], device=self.device).unsqueeze(0) # Initial finger position for resetting
@@ -168,7 +163,30 @@ class PouringEnv(DirectRLEnv):
         
 
     def _get_observations(self) -> dict:
-        obs = torch.ones((self.num_envs, self.cfg.observation_space), device=self.device)
+
+        # Scaled joint positions (exclude fingers)
+        joint_pos_scaled = (
+            2.0
+            * (self._robot.data.joint_pos[:,:7] - self.robot_joint_lower_limits)
+            / (self.robot_joint_upper_limits - self.robot_joint_lower_limits)
+            - 1.0
+        )
+
+        # Scaled joint velocities
+        joint_vel = self._robot.data.joint_vel[:,:7] * self.robot_joint_velocity_scale
+
+        # Container position (local frame)
+        container_pos = self._container.data.root_pos_w - self.scene.env_origins
+
+        # Concatenate observations
+        obs = torch.cat(
+            (
+                joint_pos_scaled,
+                joint_vel,
+                container_pos
+            ),
+            dim=-1,
+        )
         observations = {"policy": obs}
 
         return observations
@@ -201,7 +219,7 @@ class PouringEnv(DirectRLEnv):
         # Reset the robot and randomizes the initial position (to implement)
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = torch.zeros_like(joint_pos)
-        joint_pos = torch.clamp(joint_pos[:,:7], self.robot_dof_lower_limits, self.robot_dof_upper_limits)
+        joint_pos = torch.clamp(joint_pos[:,:7], self.robot_joint_lower_limits, self.robot_joint_upper_limits)
         joint_pos = torch.cat((joint_pos, self.ee_start.expand([self.num_envs, -1])), dim=1)
         self._robot.set_joint_position_target(joint_pos, env_ids=env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)

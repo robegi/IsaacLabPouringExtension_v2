@@ -32,7 +32,7 @@ class PouringEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10
     # - spaces definition
     action_space = 6
-    observation_space = 1
+    observation_space = 17
     state_space = 0
 
     # simulation
