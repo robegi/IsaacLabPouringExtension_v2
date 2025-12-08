@@ -1,5 +1,4 @@
 from omni.physx.scripts import physicsUtils, particleUtils, utils
-from isaaclab.sim.utils import get_current_stage_id
 from pxr import Usd, UsdLux, UsdGeom, Sdf, Gf, Vt, UsdPhysics, PhysxSchema
 import omni.physx.bindings._physx as physx_settings_bindings
 import omni.timeline
