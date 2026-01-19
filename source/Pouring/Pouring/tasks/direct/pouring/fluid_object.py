@@ -21,6 +21,9 @@ class FluidObjectCfg():
     density : float
     viscosity: float 
 
+    # Environment parameters
+    num_envs: int
+
      
 
 class FluidObject():
@@ -39,16 +42,18 @@ class FluidObject():
         self.default_prim_path = self.stage.GetDefaultPrim().GetPath()
         self.scenePath = Sdf.Path("/physicsScene")
 
-        # simcontext = SimulationContext.instance()
-        
-    
-    def spawn_fluid_direct(self, env_index: int = 0):
+        # Data from config
+        self.particles_num = self.cfg.numParticlesX * self.cfg.numParticlesY * self.cfg.numParticlesZ
+
+    def spawn_fluid(self):
+            # Spawns the fluid particles in the environment 0
+            env_id = 0
             
-             # Particle System
+            # Particle System
             self.particleSystemPath = self.default_prim_path.AppendChild("particleSystem")
 
             # Particle points
-            self.particlesPath = Sdf.Path(f"/World/envs/env_{env_index}/particles")
+            self.particlesPath = Sdf.Path(f"/World/envs/env_{env_id}/particles")
 
             # solver iterations
             self._solverPositionIterations = 4
@@ -134,7 +139,7 @@ class FluidObject():
                 lower, gridSpacing, self.cfg.numParticlesX, self.cfg.numParticlesY, self.cfg.numParticlesZ
             )
 
- 
+
             widths = [self.cfg.particleSpacing] * len(positions)
             
             self.particlesPrim = particleUtils.add_physx_particleset_points(
@@ -155,40 +160,54 @@ class FluidObject():
             # visibility_attribute = self.particlesPrim.GetVisibilityAttr()
             # visibility_attribute.Set("invisible")
 
-            # Saves the particles' initial state
-            self.initial_particles_pos = self.get_particles_position(env_index)
-            self.initial_particles_vel = self.get_particles_velocity(env_index)
+            # Saves the particles' initial state 
+            self.initial_particles_pos = self.get_particles_position(0)
+            self.initial_particles_vel = self.get_particles_velocity(0)
 
 
-    def get_particles_position(self, env_id: int = 0) -> torch.Tensor:
+    def get_particles_position(self, env_ids: int = -1) -> torch.Tensor:
         # Gets particles' positions in the input environment and velocities and outputs them as torch tensors
+        if env_ids == -1:
+            env_ids = self.cfg.num_envs
 
-        particles = UsdGeom.Points(self.stage.GetPrimAtPath(self.default_prim_path.AppendPath(f"envs/env_{env_id}/particles")))
-        particles_pos = torch.from_numpy(np.asarray(particles.GetPointsAttr().Get())).cuda()
+        particles_pos = torch.zeros((env_ids, self.particles_num, 3), device='cuda')
+
+        for i in range(env_ids):
+            particles = UsdGeom.Points(self.stage.GetPrimAtPath(Sdf.Path(f"/World/envs/env_{i}/particles")))
+            particles_pos[i] = torch.from_numpy(np.asarray(particles.GetPointsAttr().Get())).cuda()
 
         return particles_pos
     
-    def get_particles_velocity(self, env_id: int = 0) -> torch.Tensor:
-        # Gets particles' velocities in the input environment and outputs them as array -> torch.tensor
+    def get_particles_velocity(self, env_ids: int = -1) -> torch.Tensor:
+        # Gets particles' velocities in the input environment and outputs them as torch tensors
+        if env_ids == -1:
+            env_ids = self.cfg.num_envs
 
-        particles = UsdGeom.Points(self.stage.GetPrimAtPath(self.default_prim_path.AppendPath(f"envs/env_{env_id}/particles")))
-        particles_vel = torch.from_numpy(np.asarray(particles.GetVelocitiesAttr().Get())).cuda()
+        particles_vel = torch.zeros((env_ids, self.particles_num, 3), device='cuda')
+
+        # Cycle through all environments
+        for i in range(env_ids):
+            particles = UsdGeom.Points(self.stage.GetPrimAtPath(Sdf.Path(f"/World/envs/env_{i}/particles")))
+            particles_vel[i] = torch.from_numpy(np.asarray(particles.GetVelocitiesAttr().Get())).cuda()
 
         return particles_vel
 
-    def set_particles_position(self, particles_pos: Union[torch.tensor, None] = None, particles_vel: Union[torch.tensor, None] = None, env_id: int = 0):
+    def set_particles_position_and_velocity(self, particles_pos: Union[torch.tensor, None] = None, particles_vel: Union[torch.tensor, None] = None, env_ids: Union[list[int], None] = None):
         # Sets the particles' positions and velocities to the given array. Positions and velocity set as zero by default
-        particles = UsdGeom.Points(self.stage.GetPrimAtPath(self.default_prim_path.AppendPath("envs/env_%d/particles" % env_id)))
+        if env_ids is not None:
+            
+            for i in env_ids:
+                particles = UsdGeom.Points(self.stage.GetPrimAtPath(Sdf.Path(f"/World/envs/env_{i}/particles")))
 
-        # Resets particles if given
-        if particles_pos is not None:
-            particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(particles_pos.cpu().numpy()))
-        else:
-            particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(self.initial_particles_pos.cpu().numpy()))
+                # Resets particles if given
+                if particles_pos is not None:
+                    particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(particles_pos.cpu().numpy()))
+                else:
+                    particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(self.initial_particles_pos.cpu().numpy()))
 
-        # Resets velocities if given
-        if particles_vel is not None:
-            particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(particles_vel.cpu().numpy()))
-        else:
-            particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(self.initial_particles_vel.cpu().numpy()))
+                # Resets velocities if given
+                if particles_vel is not None:
+                    particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(particles_vel.cpu().numpy()))
+                else:
+                    particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(self.initial_particles_vel.cpu().numpy()))
 

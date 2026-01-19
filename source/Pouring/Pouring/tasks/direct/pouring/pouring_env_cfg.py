@@ -74,14 +74,14 @@ class PouringEnvCfg(DirectRLEnvCfg):
                 joint_names_expr=["panda_joint[1-4]"],
                 effort_limit=870.0,
                 velocity_limit=2.175,
-                stiffness=800.0,
+                stiffness=8.0e2,
                 damping=80.0,
             ),
             "panda_forearm": ImplicitActuatorCfg(
                 joint_names_expr=["panda_joint[5-7]"],
                 effort_limit=120.0,
                 velocity_limit=2.61,
-                stiffness=800.0,
+                stiffness=8.0e2,
                 damping=80.0,
             ),
             "panda_hand": ImplicitActuatorCfg(
@@ -103,14 +103,13 @@ class PouringEnvCfg(DirectRLEnvCfg):
     robot_finger_names = ["panda_finger_joint.*"]
 
     # Controller configuration
-    diff_ik_cfg = DifferentialIKControllerCfg(command_type="pose", use_relative_mode=True, ik_method="dls")
+    diff_ik_cfg = DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls")
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2, env_spacing=4.0, replicate_physics=False)
 
 
     # Set Glass as rigid object
-
     spawn_pos_glass = Gf.Vec3f(0.61, -0.1, 0.25)
     glass = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Glass",
@@ -131,11 +130,6 @@ class PouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Set target container as rigid object
-    # Container data from original usd model
-    container_height = 0.12
-    container_radius = 0.08/2
-    container_base = 0.02
-
     spawn_pos_container = Gf.Vec3f(0.61, 0., 0.01)
     container = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Container",
@@ -185,6 +179,6 @@ class PouringEnvCfg(DirectRLEnvCfg):
     actions_weight = -0.1
 
     # Action scales
-    action_scale = 0.5
+    action_scale = 0.5*10
 
 

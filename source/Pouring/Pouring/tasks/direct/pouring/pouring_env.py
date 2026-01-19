@@ -25,7 +25,7 @@ from isaaclab.assets import RigidObject
 from isaaclab.controllers import DifferentialIKController
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.utils.math import subtract_frame_transforms
+from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz, quat_mul
 from isaaclab.markers.config import FRAME_MARKER_CFG
 
 class PouringEnv(DirectRLEnv):
@@ -79,6 +79,11 @@ class PouringEnv(DirectRLEnv):
         self._container = RigidObject(self.cfg.container)
         self.scene.rigid_objects["container"] = self._container
 
+        # Container data from original usd model (to compute particles outside)
+        self.container_height = 0.12
+        self.container_radius = 0.08/2
+        self.container_base_thickness = 0.02
+
         # Robot
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
@@ -86,10 +91,15 @@ class PouringEnv(DirectRLEnv):
         # Controller
         self.diff_ik_controller = DifferentialIKController(self.cfg.diff_ik_cfg, num_envs=self.num_envs, device=self.device)
         self.first_setup = True
+        self.ee_goal_start = torch.tensor([0.5, -0.1, 0.3, 0.707, 0, 0.707, 0], device = self.device)
+        self.ee_goal = self.ee_goal_start.clone().expand(self.num_envs, -1)
+        self.delta_pos = torch.zeros((self.num_envs, 3), device = self.device)
+        self.delta_rot = torch.tensor([0, 0, 0], device = self.device).expand(self.num_envs, -1)
 
         # Liquid
+        self.cfg.liquidCfg.num_envs = self.num_envs
         self.liquid = FluidObject(cfg=self.cfg.liquidCfg, lower_pos=self.cfg.spawn_pos_fluid)
-        self.liquid.spawn_fluid_direct()
+        self.liquid.spawn_fluid()  # Spawn only in env 0, it is replicated automatically
 
         # # Initial particle position, from saved file
         self.liquid_init_pos = list()
@@ -108,7 +118,7 @@ class PouringEnv(DirectRLEnv):
         self.particle_fraction_out = torch.zeros((self.num_envs,1)).to(self.device)
 
         # Target on the finger actuators to hold the glass
-        self.ee_start = torch.tensor([0.4, 0.4], device=self.device).unsqueeze(0) # Initial finger position for resetting
+        self.ee_finger_start = torch.tensor([0.5, 0.5], device=self.device).unsqueeze(0) # Initial finger position for resetting
         self.ee_target = torch.zeros((self.num_envs, 2), device = self.device)  
 
         # Initial joint target is the starting position
@@ -120,10 +130,30 @@ class PouringEnv(DirectRLEnv):
         self.ee_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_current"))
         self.goal_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_goal"))
 
+        # Auxiliary variables for testing
+        self.counter = 0
+
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone().clamp(-0.01, 0.01)
-        ee_goal = self.actions
+        # self.delta_pos = self.actions[:, :3]
+        # self.delta_rot = self.actions[:, 3:]
+        
+
+        # -----------------------------------------------------------------------
+        # Testing actions (comment out)
+        if self.counter == (120/2*self.num_envs)/2:
+            self.delta_pos= torch.tensor([0, -0.01, 0]).cuda()
+
+        if self.counter == (120/2*self.num_envs)/1:
+            self.delta_pos= torch.tensor([0, 0, -0.01]).cuda()
+
+        self.counter += 1
+        # --------------------------------------------------------------------------
+        
+        ee_pos = self.ee_goal[:,:3] + self.delta_pos
+        ee_rot = quat_mul(self.ee_goal[:, 3:], quat_from_euler_xyz(self.delta_rot[:,0], self.delta_rot[:,1], self.delta_rot[:,2]))
+        self.ee_goal = torch.cat((ee_pos, ee_rot), dim=1)
         
         ###
         # IK controller (target)
@@ -134,7 +164,7 @@ class PouringEnv(DirectRLEnv):
             root_pose_w[:, 0:3], root_pose_w[:, 3:7], ee_pose_w[:, 0:3], ee_pose_w[:, 3:7]
         )
         self.diff_ik_controller.reset()
-        self.diff_ik_controller.set_command(ee_goal, ee_pos_b, ee_quat_b)    
+        self.diff_ik_controller.set_command(self.ee_goal, ee_pos_b, ee_quat_b)    
 
         # Markers
         self.ee_marker.visualize(ee_pose_w[:, 0:3], ee_pose_w[:, 3:7])
@@ -157,7 +187,6 @@ class PouringEnv(DirectRLEnv):
         )
         # compute the joint commands
         self.joint_pos_des = self.diff_ik_controller.compute(ee_pos_b, ee_quat_b, jacobian, joint_pos)
-
         self._robot.set_joint_position_target(self.joint_pos_des, joint_ids=self._robot_arm_idx)
         self._robot.set_joint_position_target(self.ee_target, joint_ids=self._robot_finger_idx[0])
         
@@ -176,7 +205,7 @@ class PouringEnv(DirectRLEnv):
         joint_vel = self._robot.data.joint_vel[:,:7] * self.robot_joint_velocity_scale
 
         # Container position (local frame)
-        container_pos = self._container.data.root_pos_w - self.scene.env_origins
+        container_pos = self._container.data.root_pos_w[:,:3] - self.scene.env_origins
 
         # Concatenate observations
         obs = torch.cat(
@@ -197,7 +226,13 @@ class PouringEnv(DirectRLEnv):
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        terminated = False
+        # Reset if most fluid is poured outside
+        spilled_fluid = self.get_particles_outside_fraction(particles_pos=self.liquid.get_particles_position(),
+                                                            container_pos = self._container.data.root_pos_w[:, :3] - self.scene.env_origins,
+                                                            container_base = self.container_base_thickness,
+                                                            container_height = self.container_height,
+                                                            container_radius = self.container_radius)  
+        terminated = torch.any(spilled_fluid > 0.5, dim = 1) # Reset if most liquid poured outside
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
 
@@ -215,12 +250,15 @@ class PouringEnv(DirectRLEnv):
 
         # Reset controller
         self.diff_ik_controller.reset()
+        self.ee_goal[env_ids] = self.ee_goal_start.clone()
+        self.delta_pos = torch.zeros((self.num_envs, 3), device = self.device)
+        self.delta_rot = torch.tensor([0, 0, 0], device = self.device).expand(self.num_envs, -1)
         
-        # Reset the robot and randomizes the initial position (to implement)
+        # Reset the robot 
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = torch.zeros_like(joint_pos)
         joint_pos = torch.clamp(joint_pos[:,:7], self.robot_joint_lower_limits, self.robot_joint_upper_limits)
-        joint_pos = torch.cat((joint_pos, self.ee_start.expand([self.num_envs, -1])), dim=1)
+        joint_pos = torch.cat((joint_pos, self.ee_finger_start.expand([len(env_ids), -1])), dim=1)
         self._robot.set_joint_position_target(joint_pos, env_ids=env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
@@ -237,28 +275,51 @@ class PouringEnv(DirectRLEnv):
         container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
-        # # Resets fluid
-        for i in env_ids:
-            self.liquid.set_particles_position(env_id = i)
+        # Resets fluid
+        self.liquid.set_particles_position_and_velocity(env_ids = env_ids, particles_pos = self.liquid_init_pos[0])
 
+        # Testing variables reset
+        self.counter = 0
 
-@torch.jit.script
-def compute_rewards(
-    rew_scale_alive: float,
-    rew_scale_terminated: float,
-    rew_scale_pole_pos: float,
-    rew_scale_cart_vel: float,
-    rew_scale_pole_vel: float,
-    pole_pos: torch.Tensor,
-    pole_vel: torch.Tensor,
-    cart_pos: torch.Tensor,
-    cart_vel: torch.Tensor,
-    reset_terminated: torch.Tensor,
-):
-    rew_alive = rew_scale_alive * (1.0 - reset_terminated.float())
-    rew_termination = rew_scale_terminated * reset_terminated.float()
-    rew_pole_pos = rew_scale_pole_pos * torch.sum(torch.square(pole_pos).unsqueeze(dim=1), dim=-1)
-    rew_cart_vel = rew_scale_cart_vel * torch.sum(torch.abs(cart_vel).unsqueeze(dim=1), dim=-1)
-    rew_pole_vel = rew_scale_pole_vel * torch.sum(torch.abs(pole_vel).unsqueeze(dim=1), dim=-1)
-    total_reward = rew_alive + rew_termination + rew_pole_pos + rew_cart_vel + rew_pole_vel
-    return total_reward
+    ###
+    # Auxiliary methods
+    ###
+    #@torch.jit.script
+    def get_particles_outside_fraction(self, particles_pos: torch.Tensor,
+                                       container_pos: torch.Tensor,
+                                       container_height: float,
+                                       container_radius: float,
+                                       container_base: float) -> torch.Tensor:
+        
+        # Computes the fraction of particles that are outside the container and below a certain height
+        height_condition = particles_pos[:, :, 2] < container_height + container_base
+        x = particles_pos[:, :, 0] - container_pos[:, 0].unsqueeze(1)
+        y = particles_pos[:, :, 1] - container_pos[:, 1].unsqueeze(1)
+        outside_condition = x**2 + y**2 > container_radius**2
+        particles_outside = torch.sum(torch.where(height_condition & outside_condition, 1, 0), dim = 1)
+        total_particles = particles_pos.shape[1]
+
+        fraction_outside = particles_outside / total_particles
+
+        return fraction_outside.reshape(-1, 1)
+
+    @torch.jit.script
+    def compute_rewards(
+        rew_scale_alive: float,
+        rew_scale_terminated: float,
+        rew_scale_pole_pos: float,
+        rew_scale_cart_vel: float,
+        rew_scale_pole_vel: float,
+        pole_pos: torch.Tensor,
+        pole_vel: torch.Tensor,
+        cart_pos: torch.Tensor,
+        cart_vel: torch.Tensor,
+        reset_terminated: torch.Tensor,
+    ):
+        rew_alive = rew_scale_alive * (1.0 - reset_terminated.float())
+        rew_termination = rew_scale_terminated * reset_terminated.float()
+        rew_pole_pos = rew_scale_pole_pos * torch.sum(torch.square(pole_pos).unsqueeze(dim=1), dim=-1)
+        rew_cart_vel = rew_scale_cart_vel * torch.sum(torch.abs(cart_vel).unsqueeze(dim=1), dim=-1)
+        rew_pole_vel = rew_scale_pole_vel * torch.sum(torch.abs(pole_vel).unsqueeze(dim=1), dim=-1)
+        total_reward = rew_alive + rew_termination + rew_pole_pos + rew_cart_vel + rew_pole_vel
+        return total_reward
