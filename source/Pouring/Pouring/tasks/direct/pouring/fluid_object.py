@@ -161,32 +161,30 @@ class FluidObject():
             # visibility_attribute.Set("invisible")
 
             # Saves the particles' initial state 
-            self.initial_particles_pos = self.get_particles_position(0)
-            self.initial_particles_vel = self.get_particles_velocity(0)
+            self.initial_particles_pos = self.get_particles_position([0])
+            self.initial_particles_vel = self.get_particles_velocity([0])
 
 
-    def get_particles_position(self, env_ids: int = -1) -> torch.Tensor:
+    def get_particles_position(self, env_ids: Union[list[int], None] = None) -> torch.Tensor:
         # Gets particles' positions in the input environment and velocities and outputs them as torch tensors
-        if env_ids == -1:
-            env_ids = self.cfg.num_envs
+        if env_ids is None:
+            env_ids = range(self.cfg.num_envs)
 
-        particles_pos = torch.zeros((env_ids, self.particles_num, 3), device='cuda')
-
-        for i in range(env_ids):
+        particles_pos = torch.zeros((len(env_ids), self.particles_num, 3), device='cuda')
+        for i in env_ids:
             particles = UsdGeom.Points(self.stage.GetPrimAtPath(Sdf.Path(f"/World/envs/env_{i}/particles")))
             particles_pos[i] = torch.from_numpy(np.asarray(particles.GetPointsAttr().Get())).cuda()
 
         return particles_pos
     
-    def get_particles_velocity(self, env_ids: int = -1) -> torch.Tensor:
+    def get_particles_velocity(self, env_ids: Union[list[int], None] = None) -> torch.Tensor:
         # Gets particles' velocities in the input environment and outputs them as torch tensors
-        if env_ids == -1:
-            env_ids = self.cfg.num_envs
+        if env_ids is None:
+            env_ids = range(self.cfg.num_envs)
 
-        particles_vel = torch.zeros((env_ids, self.particles_num, 3), device='cuda')
-
+        particles_vel = torch.zeros((len(env_ids), self.particles_num, 3), device='cuda')
         # Cycle through all environments
-        for i in range(env_ids):
+        for i in env_ids:
             particles = UsdGeom.Points(self.stage.GetPrimAtPath(Sdf.Path(f"/World/envs/env_{i}/particles")))
             particles_vel[i] = torch.from_numpy(np.asarray(particles.GetVelocitiesAttr().Get())).cuda()
 
@@ -194,20 +192,21 @@ class FluidObject():
 
     def set_particles_position_and_velocity(self, particles_pos: Union[torch.tensor, None] = None, particles_vel: Union[torch.tensor, None] = None, env_ids: Union[list[int], None] = None):
         # Sets the particles' positions and velocities to the given array. Positions and velocity set as zero by default
-        if env_ids is not None:
-            
-            for i in env_ids:
-                particles = UsdGeom.Points(self.stage.GetPrimAtPath(Sdf.Path(f"/World/envs/env_{i}/particles")))
+        if env_ids is None:
+            env_ids = range(self.cfg.num_envs)
 
-                # Resets particles if given
-                if particles_pos is not None:
-                    particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(particles_pos.cpu().numpy()))
-                else:
-                    particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(self.initial_particles_pos.cpu().numpy()))
+        for i in env_ids:
+            particles = UsdGeom.Points(self.stage.GetPrimAtPath(Sdf.Path(f"/World/envs/env_{i}/particles")))
 
-                # Resets velocities if given
-                if particles_vel is not None:
-                    particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(particles_vel.cpu().numpy()))
-                else:
-                    particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(self.initial_particles_vel.cpu().numpy()))
+            # Resets particles if given
+            if particles_pos is not None:
+                particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(particles_pos.cpu().numpy()))
+            else:
+                particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(self.initial_particles_pos.cpu().numpy()))
+
+            # Resets velocities if given
+            if particles_vel is not None:
+                particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(particles_vel.cpu().numpy()))
+            else:
+                particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(self.initial_particles_vel.cpu().numpy()))
 
