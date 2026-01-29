@@ -32,7 +32,7 @@ class PouringEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10
     # - spaces definition
     action_space = 6
-    observation_space = 17
+    observation_space = 19
     state_space = 0
 
     # simulation
@@ -135,9 +135,9 @@ class PouringEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Container",
         init_state=RigidObjectCfg.InitialStateCfg(pos=spawn_pos_container, rot=[1, 0, 0, 0]),
         spawn=UsdFileCfg(
-            usd_path=f"{CURRENT_PATH}/usd_models/Vase_Cylinder_2.usd",
+            usd_path=f"{CURRENT_PATH}/usd_models/Container.usd",
             semantic_tags=[("class","Container")],
-            scale=(0.01, 0.01, 0.01),
+            scale=(0.001, 0.001, 0.001),
             rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
@@ -179,6 +179,5 @@ class PouringEnvCfg(DirectRLEnvCfg):
     actions_weight = -0.1
 
     # Action scales
-    action_scale = 0.5*10
-
-
+    action_scale_lin = 0.1
+    action_scale_rot = 0.1

@@ -81,7 +81,7 @@ class PouringEnv(DirectRLEnv):
 
         # Container data from original usd model (to compute particles outside)
         self.container_height = 0.12
-        self.container_radius = 0.08/2
+        self.container_radius = 0.15/2
         self.container_base_thickness = 0.02
 
         # Robot
@@ -110,12 +110,8 @@ class PouringEnv(DirectRLEnv):
             self.liquid_init_pos[i] += torch.ones_like(self.liquid_init_pos[i], device=self.device)*torch.tensor([0, 0, 0.01], device=self.device)
             self.liquid_init_vel.append(torch.zeros_like(self.liquid_init_pos[i], device=self.device))
 
-        # Reward and observations
-        self.reward = torch.zeros((self.num_envs)).to(self.device)
-        self.obs_reward_in = torch.zeros((self.num_envs)).to(self.device)
-        self.obs_reward_out = torch.zeros((self.num_envs)).to(self.device)
-        self.particle_fraction_in = torch.zeros((self.num_envs,1)).to(self.device)
-        self.particle_fraction_out = torch.zeros((self.num_envs,1)).to(self.device)
+        # Particles
+        self.particle_pos = torch.ones((self.num_envs, self.liquid.particles_num, 3)).to(self.device)
 
         # Target on the finger actuators to hold the glass
         self.ee_finger_start = torch.tensor([0.5, 0.5], device=self.device).unsqueeze(0) # Initial finger position for resetting
@@ -123,6 +119,11 @@ class PouringEnv(DirectRLEnv):
 
         # Initial joint target is the starting position
         self.robot_dof_targets = torch.tensor(list(self._robot.cfg.init_state.joint_pos.values()), device=self.device)
+
+        # Initialize variables to store useful quantities
+        self.spilled_fraction = torch.zeros((self.num_envs, self.liquid.particles_num, 3), device = self.device)
+        self.inside_fraction = torch.zeros((self.num_envs, self.liquid.particles_num, 3), device = self.device)
+        self.container_pos = torch.zeros((self.num_envs, 3), device = self.device)
 
         # Marker on the end effector and the desired pose
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -135,21 +136,28 @@ class PouringEnv(DirectRLEnv):
 
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self.actions = actions.clone().clamp(-0.01, 0.01)
-        # self.delta_pos = self.actions[:, :3]
-        # self.delta_rot = self.actions[:, 3:]
-        
+        self.actions = actions.clone().clamp(-1, 1)
+        self.delta_pos = self.actions[:, :3]*self.cfg.action_scale_lin
+        self.delta_rot = self.actions[:, 3:]*self.cfg.action_scale_rot
 
-        # -----------------------------------------------------------------------
-        # Testing actions (comment out)
-        if self.counter == (120/2*self.num_envs)/2:
-            self.delta_pos= torch.tensor([0, -0.01, 0]).cuda()
+        # # ----------------------------------------------------------------------------------------------------------------------
+        # # Testing actions (comment out)
+        # if self.counter == (120/2*self.num_envs)/2:
+        #     self.delta_pos= torch.tensor([0, -0.1, 0]).cuda()
 
-        if self.counter == (120/2*self.num_envs)/1:
-            self.delta_pos= torch.tensor([0, 0, -0.01]).cuda()
+        # elif self.counter == (120/2*self.num_envs)*3:
+        #     self.delta_pos= torch.tensor([0, 0, -0.]).cuda()
 
-        self.counter += 1
-        # --------------------------------------------------------------------------
+        # elif self.counter == (120/2*self.num_envs)*2:
+        #     self.delta_rot= torch.tensor([0, 0, -math.pi/2]).expand(self.num_envs, -1).cuda()
+
+        # else:
+        #     self.delta_pos= torch.tensor([0, 0, 0]).cuda()
+        #     self.delta_rot= torch.tensor([0, 0, 0]).expand(self.num_envs, -1).cuda()
+            
+
+        # self.counter += 1
+        # # -----------------------------------------------------------------------------------------------------------------------
         
         ee_pos = self.ee_goal[:,:3] + self.delta_pos
         ee_rot = quat_mul(self.ee_goal[:, 3:], quat_from_euler_xyz(self.delta_rot[:,0], self.delta_rot[:,1], self.delta_rot[:,2]))
@@ -193,6 +201,9 @@ class PouringEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
 
+        # Get particles data, once for all methods
+        self.particle_pos=self.liquid.get_particles_position()
+        
         # Scaled joint positions (exclude fingers)
         joint_pos_scaled = (
             2.0
@@ -205,34 +216,60 @@ class PouringEnv(DirectRLEnv):
         joint_vel = self._robot.data.joint_vel[:,:7] * self.robot_joint_velocity_scale
 
         # Container position (local frame)
-        container_pos = self._container.data.root_pos_w[:,:3] - self.scene.env_origins
+        self.container_pos = self._container.data.root_pos_w[:,:3] - self.scene.env_origins
 
+        # In/out fraction
+        self.spilled_fraction, self.inside_fraction = self.get_particles_in_out_fraction(particles_pos=self.particle_pos,
+                                                            container_pos = self.container_pos,
+                                                            container_base = self.container_base_thickness,
+                                                            container_height = self.container_height,
+                                                            container_radius = self.container_radius,
+                                                            total_particles = self.liquid.particles_num)
+        
         # Concatenate observations
         obs = torch.cat(
             (
                 joint_pos_scaled,
                 joint_vel,
-                container_pos
+                self.container_pos,
+                self.spilled_fraction,
+                self.inside_fraction,
             ),
             dim=-1,
         )
         observations = {"policy": obs}
-
+        
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        total_reward = torch.zeros((self.num_envs), device=self.device).unsqueeze(1)
-        
+        # Get quantities from sim
+        source_vel = self._glass.data.root_lin_vel_w
+        joint_vel = self._robot.data.joint_vel[:,:7]
+
+        # Penalty for fast movements of the source container
+        vel = torch.norm(source_vel, dim=1)
+        reward_vel = torch.zeros((self.num_envs, 1)).cuda()
+        reward_vel += torch.where(vel > 2., 1., 0.).unsqueeze(1)
+        reward_vel = self.cfg.source_vel_weight*reward_vel
+
+        # Penalty for joint velocities
+        reward_joint_vel = torch.sum(joint_vel**2, dim=-1)
+        reward_joint_vel = self.cfg.joint_vel_weight*reward_joint_vel.unsqueeze(1)
+
+        # Penalty for action magnitude
+        reward_actions = torch.sum(self.actions**2, dim=-1)
+        reward_actions= self.cfg.actions_weight*reward_actions.unsqueeze(1)
+
+        reward_inside = self.inside_fraction*self.cfg.inside_weight
+        reward_outside = self.spilled_fraction*self.cfg.outside_weight
+
+        total_reward = reward_inside + reward_outside + reward_vel + reward_joint_vel + reward_actions
+
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        # Reset if most fluid is poured outside
-        spilled_fluid = self.get_particles_outside_fraction(particles_pos=self.liquid.get_particles_position(),
-                                                            container_pos = self._container.data.root_pos_w[:, :3] - self.scene.env_origins,
-                                                            container_base = self.container_base_thickness,
-                                                            container_height = self.container_height,
-                                                            container_radius = self.container_radius)  
-        terminated = torch.any(spilled_fluid > 0.5, dim = 1) # Reset if most liquid poured outside
+        # Reset if most fluid is poured outside 
+        terminated = torch.any(self.spilled_fraction > 0.5, dim = 1) # Reset if most liquid poured outside
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
 
@@ -276,7 +313,7 @@ class PouringEnv(DirectRLEnv):
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         # Resets fluid
-        self.liquid.set_particles_position_and_velocity(env_ids = env_ids, particles_pos = self.liquid_init_pos[0])
+        self.liquid.set_particles_position_and_velocity(env_ids = env_ids, particles_pos = self.liquid_init_pos[0], particles_vel = self.liquid_init_vel[0])
 
         # Testing variables reset
         self.counter = 0
@@ -284,42 +321,48 @@ class PouringEnv(DirectRLEnv):
     ###
     # Auxiliary methods
     ###
-    #@torch.jit.script
-    def get_particles_outside_fraction(self, particles_pos: torch.Tensor,
+    @torch.jit.script
+    def get_particles_in_out_fraction(particles_pos: torch.Tensor,
                                        container_pos: torch.Tensor,
                                        container_height: float,
                                        container_radius: float,
-                                       container_base: float) -> torch.Tensor:
+                                       container_base: float,
+                                       total_particles: int) -> tuple[torch.Tensor, torch.Tensor]:
         
         # Computes the fraction of particles that are outside the container and below a certain height
         height_condition = particles_pos[:, :, 2] < container_height + container_base
         x = particles_pos[:, :, 0] - container_pos[:, 0].unsqueeze(1)
         y = particles_pos[:, :, 1] - container_pos[:, 1].unsqueeze(1)
-        outside_condition = x**2 + y**2 > container_radius**2
+        outside_condition = x**2 + y**2 >= container_radius**2
         particles_outside = torch.sum(torch.where(height_condition & outside_condition, 1, 0), dim = 1)
-        total_particles = particles_pos.shape[1]
+        inside_condition = x**2 + y**2 < container_radius**2
+        particles_inside = torch.sum(torch.where(height_condition & inside_condition, 1, 0), dim = 1)
 
         fraction_outside = particles_outside / total_particles
+        fraction_outside = fraction_outside.reshape(-1, 1)
 
-        return fraction_outside.reshape(-1, 1)
+        fraction_inside = particles_inside / total_particles
+        fraction_inside = fraction_inside.reshape(-1, 1)
+
+        return fraction_outside, fraction_inside
 
     @torch.jit.script
-    def compute_rewards(
-        rew_scale_alive: float,
-        rew_scale_terminated: float,
-        rew_scale_pole_pos: float,
-        rew_scale_cart_vel: float,
-        rew_scale_pole_vel: float,
-        pole_pos: torch.Tensor,
-        pole_vel: torch.Tensor,
-        cart_pos: torch.Tensor,
-        cart_vel: torch.Tensor,
-        reset_terminated: torch.Tensor,
-    ):
-        rew_alive = rew_scale_alive * (1.0 - reset_terminated.float())
-        rew_termination = rew_scale_terminated * reset_terminated.float()
-        rew_pole_pos = rew_scale_pole_pos * torch.sum(torch.square(pole_pos).unsqueeze(dim=1), dim=-1)
-        rew_cart_vel = rew_scale_cart_vel * torch.sum(torch.abs(cart_vel).unsqueeze(dim=1), dim=-1)
-        rew_pole_vel = rew_scale_pole_vel * torch.sum(torch.abs(pole_vel).unsqueeze(dim=1), dim=-1)
-        total_reward = rew_alive + rew_termination + rew_pole_pos + rew_cart_vel + rew_pole_vel
-        return total_reward
+    def get_particles_inside_fraction(particles_pos: torch.Tensor,
+                                       container_pos: torch.Tensor,
+                                       container_height: float,
+                                       container_radius: float,
+                                       container_base: float,
+                                       total_particles: int) -> torch.Tensor:
+        
+        # Computes the fraction of particles that are outside the container and below a certain height
+        height_condition = particles_pos[:, :, 2] < container_height + container_base
+        x = particles_pos[:, :, 0] - container_pos[:, 0].unsqueeze(1)
+        y = particles_pos[:, :, 1] - container_pos[:, 1].unsqueeze(1)
+        inside_condition = x**2 + y**2 < container_radius**2
+        particles_inside = torch.sum(torch.where(height_condition & inside_condition, 1, 0), dim = 1)
+        
+        fraction_inside = particles_inside / total_particles
+
+        return fraction_inside.reshape(-1, 1)
+
+    
