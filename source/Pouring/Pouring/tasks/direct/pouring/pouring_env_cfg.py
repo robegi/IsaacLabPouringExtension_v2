@@ -23,16 +23,18 @@ from isaaclab.assets import RigidObjectCfg
 import os
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
 from isaaclab.controllers import DifferentialIKControllerCfg
+from isaaclab.sensors import Camera, CameraCfg, TiledCamera, TiledCameraCfg, save_images_to_file
 
 
 @configclass
 class PouringEnvCfg(DirectRLEnvCfg):
     # env
-    decimation = 5
+    decimation = 20
     episode_length_s = 10
     # - spaces definition
     action_space = 4
-    observation_space = 32
+    num_channels = 3
+    num_sensors = 32
     state_space = 0
 
     # simulation
@@ -152,6 +154,23 @@ class PouringEnvCfg(DirectRLEnvCfg):
     # fluid object
     spawn_pos_fluid = Gf.Vec3f(0.0, 0.0, 4.0)  # Lower position for the spawn
 
+    # camera
+    camera_pos = (1.5, -0.1, 0.2)
+    camera_rot = (0, 0, 0,  0.1)
+    camera: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Camera",
+        offset=TiledCameraCfg.OffsetCfg(pos=camera_pos, rot=camera_rot, convention="world"),
+        data_types=['rgb'],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 20.0)
+        ),
+        width=80,
+        height=80,
+    )
+    # observation_space = [camera.height, camera.width, num_channels] if not using PourIt
+    # NOTE PourIt always crops the image to 480x480. Channels first in pytorch network. Position is of the EE relative to the target container
+    observation_space = {"camera": [num_channels, camera.width, camera.height], "sensors": num_sensors}
+
     # Add liquid configuration parameters
     # Direct spawn
     liquidCfg = FluidObjectCfg()
@@ -180,4 +199,4 @@ class PouringEnvCfg(DirectRLEnvCfg):
 
     # Action scales
     action_scale_lin = 0.01
-    action_scale_rot = 0.1
+    action_scale_rot = 0.5

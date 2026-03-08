@@ -14,50 +14,90 @@ models:
     max_log_std: 2.0
     initial_log_std: 0.0
     network:
-      - name: net
-        input: STATES
-        layers: [516, 256, 128, 64]
+      - name: features_extractor
+        input: STATES["camera"] # PyTorch NHWC -> NCHW (Already swapped from env)
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 10, stride: 5, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 5, stride: 3, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - flatten
         activations: relu
+      - name: net
+        input: concatenate([features_extractor, STATES["sensors"]])
+        layers: [512, 256, 128]
+        activations: elu
     output: ACTIONS
 
   target_critic_1:  # see deterministic_model parameters
     class: DeterministicMixin
     clip_actions: True
     network:
-      - name: net
-        input: concatenate([STATES, ACTIONS])
-        layers: [516, 256, 128, 64]
+      - name: features_extractor
+        input: STATES["camera"] # PyTorch NHWC -> NCHW (Already swapped from env)
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 10, stride: 5, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 5, stride: 3, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - flatten
         activations: relu
+      - name: net
+        input: concatenate([features_extractor, STATES["sensors"]])
+        layers: [512, 256, 128]
+        activations: elu
     output: ONE
 
   target_critic_2:  # see deterministic_model parameters
     class: DeterministicMixin
     clip_actions: True
     network:
-      - name: net
-        input: concatenate([STATES, ACTIONS])
-        layers: [516, 256, 128, 64]
+      - name: features_extractor
+        input: STATES["camera"] # PyTorch NHWC -> NCHW (Already swapped from env)
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 10, stride: 5, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 5, stride: 3, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - flatten
         activations: relu
+      - name: net
+        input: concatenate([features_extractor, STATES["sensors"]])
+        layers: [512, 256, 128]
+        activations: elu
     output: ONE
 
   critic_1:  # see deterministic_model parameters
     class: DeterministicMixin
     clip_actions: True
     network:
-      - name: net
-        input: concatenate([STATES, ACTIONS])
-        layers: [516, 256, 128, 64]
+      - name: features_extractor
+        input: STATES["camera"] # PyTorch NHWC -> NCHW (Already swapped from env)
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 10, stride: 5, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 5, stride: 3, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - flatten
         activations: relu
+      - name: net
+        input: concatenate([features_extractor, STATES["sensors"]])
+        layers: [512, 256, 128]
+        activations: elu
     output: ONE
 
   critic_2:  # see deterministic_model parameters
     class: DeterministicMixin
     clip_actions: True
     network:
-      - name: net
-        input: concatenate([STATES, ACTIONS])
-        layers: [516, 256, 128, 64]
+      - name: features_extractor
+        input: STATES["camera"] # PyTorch NHWC -> NCHW (Already swapped from env)
+        layers:
+          - conv2d: {out_channels: 32, kernel_size: 10, stride: 5, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 5, stride: 3, padding: 0}
+          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
+          - flatten
         activations: relu
+      - name: net
+        input: concatenate([features_extractor, STATES["sensors"]])
+        layers: [512, 256, 128]
+        activations: elu
     output: ONE
 
 

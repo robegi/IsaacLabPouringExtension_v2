@@ -27,6 +27,9 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz, quat_mul
 from isaaclab.markers.config import FRAME_MARKER_CFG
+from isaaclab.sensors import Camera, CameraCfg, TiledCamera, TiledCameraCfg, save_images_to_file
+import omni.replicator.core as rep
+import os
 
 class PouringEnv(DirectRLEnv):
     cfg: PouringEnvCfg
@@ -88,6 +91,21 @@ class PouringEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.robot)
         self.scene.articulations["robot"] = self._robot
 
+        # Camera
+        self._camera = TiledCamera(self.cfg.camera) 
+        self.data_type = 'rgb'
+        self.scene.sensors["camera"] = self._camera 
+
+        # Create replicator writer
+        self.output_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output", "camera")
+        self.rep_writer = rep.BasicWriter(
+            output_dir=self.output_dir,
+            frame_padding=0,
+            colorize_instance_id_segmentation=self._camera.cfg.colorize_instance_id_segmentation,
+            colorize_instance_segmentation=self._camera.cfg.colorize_instance_segmentation,
+            colorize_semantic_segmentation=self._camera.cfg.colorize_semantic_segmentation,
+        )
+
         # Controller
         self.diff_ik_controller = DifferentialIKController(self.cfg.diff_ik_cfg, num_envs=self.num_envs, device=self.device)
         self.first_setup = True
@@ -126,6 +144,9 @@ class PouringEnv(DirectRLEnv):
         self.spilled_fraction = torch.zeros((self.num_envs, self.liquid.particles_num, 3), device = self.device)
         self.inside_fraction = torch.zeros((self.num_envs, self.liquid.particles_num, 3), device = self.device)
         self.container_pos = torch.zeros((self.num_envs, 3), device = self.device)
+        self.obs = {"camera": torch.zeros((self.num_envs, self.cfg.num_channels, self.cfg.camera.width, self.cfg.camera.height), device = self.device), 
+                    "sensors": torch.zeros((self.num_envs, self.cfg.num_sensors), device = self.device)}
+
 
         # Marker on the end effector and the desired pose
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -206,7 +227,25 @@ class PouringEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
 
-        # Get particles data, once for all methods
+        # Camera
+        
+        # Extract and save rgb output from camera
+        camera_data = self._camera.data.output[self.data_type]/255.0
+        # Choose whether to save the images or not
+        images_are_being_saved = True
+        
+        if images_are_being_saved:
+            self.save_image(camera_data, self.index_image, 0, "rgb")
+
+        self.index_image +=1 # Index for saving the images
+        # Subtract the mean from the camera input
+        mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
+        camera_data -= mean_tensor
+        self.obs["camera"] = camera_data
+
+        # Sensors
+
+        # Get particles data
         self.particle_pos=self.liquid.get_particles_position()
         
         # Scaled joint positions (exclude fingers)
@@ -239,7 +278,7 @@ class PouringEnv(DirectRLEnv):
                                                             total_particles = self.liquid.particles_num)
         
         # Concatenate observations
-        obs = torch.cat(
+        self.obs["sensors"] = torch.cat(
             (
                 joint_pos_scaled,
                 joint_vel,
@@ -252,7 +291,7 @@ class PouringEnv(DirectRLEnv):
             ),
             dim=-1,
         )
-        observations = {"policy": obs}
+        observations = {"policy": self.obs}
         
         return observations
 
@@ -276,7 +315,14 @@ class PouringEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         # Reset if most fluid is poured outside 
-        terminated = torch.any(self.spilled_fraction > 0.5, dim = 1) # Reset if most liquid poured outside
+        # In/out fraction
+        spilled_fraction, inside_fraction = self.get_particles_in_out_fraction(particles_pos=self.particle_pos,
+                                                            container_pos = self.container_pos,
+                                                            container_base = self.container_base_thickness,
+                                                            container_height = self.container_height,
+                                                            container_radius = self.container_radius,
+                                                            total_particles = self.liquid.particles_num)
+        terminated = torch.any(spilled_fraction > 0.5, dim = 1) # Reset if most liquid poured outside
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
 
@@ -320,7 +366,10 @@ class PouringEnv(DirectRLEnv):
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         # Resets fluid
-        self.liquid.set_particles_position_and_velocity(env_ids = env_ids, particles_pos = self.liquid_init_pos[0], particles_vel = self.liquid_init_vel[0])
+        self.liquid.set_particles_position_and_velocity(env_ids = env_ids, particles_pos=self.liquid_init_pos[0], particles_vel=self.liquid_init_vel[0])
+
+        # Reset camera saving index
+        self.index_image = 0
 
         # Testing variables reset
         self.counter = 0
@@ -371,5 +420,21 @@ class PouringEnv(DirectRLEnv):
         fraction_inside = particles_inside / total_particles
 
         return fraction_inside.reshape(-1, 1)
+    
+    def save_image(self, file, index_image, index_env, name):
+        # Save images from camera 
+        if not torch.is_tensor(file):
+            file = torch.tensor(file, device=self.device)
+        # Adjust dimensions
+        if len(file.shape)<4:
+            file = torch.unsqueeze(file, 0)
+        # Expand number of channels
+        if file.shape[3]==1:
+            #print(file.unique())
+            file_new = torch.zeros((file.shape[0],file.shape[1],file.shape[2],3), device=self.device)
+            file_new[:] = file 
+            file = file_new
+            #print(file.unique())
+        save_images_to_file(file, f"{self.cfg.CURRENT_PATH}/output/camera/{name}_{index_env}_{index_image}.png")
 
     
