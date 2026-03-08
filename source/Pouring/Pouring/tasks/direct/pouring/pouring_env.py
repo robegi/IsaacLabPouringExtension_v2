@@ -94,7 +94,9 @@ class PouringEnv(DirectRLEnv):
         self.ee_goal_start = torch.tensor([0.5, -0.1, 0.3, 0.707, 0, 0.707, 0], device = self.device)
         self.ee_goal = self.ee_goal_start.clone().expand(self.num_envs, -1)
         self.delta_pos = torch.zeros((self.num_envs, 3), device = self.device)
-        self.delta_rot = torch.tensor([0, 0, 0], device = self.device).expand(self.num_envs, -1)
+        self.delta_rot = torch.tensor([0], device = self.device).expand(self.num_envs, -1)
+        self.delta_pos_limit_low = torch.tensor([0.3, -0.5, 0], device = self.device)
+        self.delta_pos_limit_up = torch.tensor([0.8, 0.5, 0.5], device = self.device)
 
         # Liquid
         self.cfg.liquidCfg.num_envs = self.num_envs
@@ -138,7 +140,7 @@ class PouringEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone().clamp(-1, 1)
         self.delta_pos = self.actions[:, :3]*self.cfg.action_scale_lin
-        self.delta_rot = self.actions[:, 3:]*self.cfg.action_scale_rot
+        self.delta_rot = self.actions[:, 3]*self.cfg.action_scale_rot
 
         # # ----------------------------------------------------------------------------------------------------------------------
         # # Testing actions (comment out)
@@ -149,19 +151,21 @@ class PouringEnv(DirectRLEnv):
         #     self.delta_pos= torch.tensor([0, 0, -0.]).cuda()
 
         # elif self.counter == (120/2*self.num_envs)*2:
-        #     self.delta_rot= torch.tensor([0, 0, -math.pi/2]).expand(self.num_envs, -1).cuda()
+        #     self.delta_rot= torch.tensor([-math.pi/2]).expand(self.num_envs, -1).cuda()
 
         # else:
         #     self.delta_pos= torch.tensor([0, 0, 0]).cuda()
-        #     self.delta_rot= torch.tensor([0, 0, 0]).expand(self.num_envs, -1).cuda()
+        #     self.delta_rot= torch.tensor([0]).expand(self.num_envs, -1).cuda()
             
 
         # self.counter += 1
         # # -----------------------------------------------------------------------------------------------------------------------
         
+        # Apply actions
         ee_pos = self.ee_goal[:,:3] + self.delta_pos
-        ee_rot = quat_mul(self.ee_goal[:, 3:], quat_from_euler_xyz(self.delta_rot[:,0], self.delta_rot[:,1], self.delta_rot[:,2]))
-        self.ee_goal = torch.cat((ee_pos, ee_rot), dim=1)
+        ee_pos = ee_pos.clamp(self.delta_pos_limit_low, self.delta_pos_limit_up)
+        ee_rot = quat_mul(self.ee_goal[:, 3:], quat_from_euler_xyz(torch.tensor(0), torch.tensor(0), self.delta_rot))
+        self.ee_goal = torch.cat((ee_pos, ee_rot), dim=1) 
         
         ###
         # IK controller (target)
@@ -176,6 +180,7 @@ class PouringEnv(DirectRLEnv):
 
         # Markers
         self.ee_marker.visualize(ee_pose_w[:, 0:3], ee_pose_w[:, 3:7])
+        self.goal_marker.visualize(self.ee_goal[:, 0:3] + self.scene.env_origins[:, 0:3], self.ee_goal[:, 3:7])
     
 
 
@@ -215,8 +220,15 @@ class PouringEnv(DirectRLEnv):
         # Scaled joint velocities
         joint_vel = self._robot.data.joint_vel[:,:7] * self.robot_joint_velocity_scale
 
-        # Container position (local frame)
-        self.container_pos = self._container.data.root_pos_w[:,:3] - self.scene.env_origins
+        # EE position
+        ee_pose_w = self._robot.data.body_pose_w[:, self.robot_entity_cfg.body_ids[0]]
+        root_pose_w = self._robot.data.root_pose_w
+        ee_pos_b, ee_quat_b = subtract_frame_transforms(
+            root_pose_w[:, 0:3], root_pose_w[:, 3:7], ee_pose_w[:, 0:3], ee_pose_w[:, 3:7]
+        )
+        
+        # Container position in plane (local frame)
+        self.container_pos = self._container.data.root_pos_w[:,:2] - self.scene.env_origins[:,:2]
 
         # In/out fraction
         self.spilled_fraction, self.inside_fraction = self.get_particles_in_out_fraction(particles_pos=self.particle_pos,
@@ -231,6 +243,9 @@ class PouringEnv(DirectRLEnv):
             (
                 joint_pos_scaled,
                 joint_vel,
+                ee_pos_b,
+                ee_quat_b,
+                self.ee_goal,
                 self.container_pos,
                 self.spilled_fraction,
                 self.inside_fraction,
@@ -242,28 +257,20 @@ class PouringEnv(DirectRLEnv):
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
-        # Get quantities from sim
-        source_vel = self._glass.data.root_lin_vel_w
+
+        # Penalty for velocity magnitude
         joint_vel = self._robot.data.joint_vel[:,:7]
-
-        # Penalty for fast movements of the source container
-        vel = torch.norm(source_vel, dim=1)
-        reward_vel = torch.zeros((self.num_envs, 1)).cuda()
-        reward_vel += torch.where(vel > 2., 1., 0.).unsqueeze(1)
-        reward_vel = self.cfg.source_vel_weight*reward_vel
-
-        # Penalty for joint velocities
-        reward_joint_vel = torch.sum(joint_vel**2, dim=-1)
-        reward_joint_vel = self.cfg.joint_vel_weight*reward_joint_vel.unsqueeze(1)
-
-        # Penalty for action magnitude
-        reward_actions = torch.sum(self.actions**2, dim=-1)
+        reward_actions = torch.sum(joint_vel**2, dim=-1)
         reward_actions= self.cfg.actions_weight*reward_actions.unsqueeze(1)
 
         reward_inside = self.inside_fraction*self.cfg.inside_weight
         reward_outside = self.spilled_fraction*self.cfg.outside_weight
 
-        total_reward = reward_inside + reward_outside + reward_vel + reward_joint_vel + reward_actions
+        # Penalty for source container below threshold
+        source_pos = self._glass.data.root_pos_w[:,:3] - self.scene.env_origins
+        reward_source_pos = torch.where(source_pos[:,2]<self.container_height + 0.03, 1.0, .0).unsqueeze(1)*self.cfg.source_pos_weight
+
+        total_reward = reward_inside + reward_outside + reward_actions + reward_source_pos
 
         return total_reward
 
@@ -289,7 +296,7 @@ class PouringEnv(DirectRLEnv):
         self.diff_ik_controller.reset()
         self.ee_goal[env_ids] = self.ee_goal_start.clone()
         self.delta_pos = torch.zeros((self.num_envs, 3), device = self.device)
-        self.delta_rot = torch.tensor([0, 0, 0], device = self.device).expand(self.num_envs, -1)
+        self.delta_rot = torch.tensor([0], device = self.device).expand(self.num_envs, -1)
         
         # Reset the robot 
         joint_pos = self._robot.data.default_joint_pos[env_ids]

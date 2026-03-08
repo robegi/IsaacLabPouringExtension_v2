@@ -1,0 +1,117 @@
+seed: 42
+
+
+# Models are instantiated using skrl's model instantiator utility
+# https://skrl.readthedocs.io/en/latest/api/utils/model_instantiators.html
+models:
+  separate: True
+
+  policy:  # see gaussian_model parameters
+    class: GaussianMixin
+    clip_actions: True
+    clip_log_std: True
+    min_log_std: -20.0
+    max_log_std: 2.0
+    initial_log_std: 0.0
+    network:
+      - name: net
+        input: STATES
+        layers: [516, 256, 128, 64]
+        activations: relu
+    output: ACTIONS
+
+  target_critic_1:  # see deterministic_model parameters
+    class: DeterministicMixin
+    clip_actions: True
+    network:
+      - name: net
+        input: concatenate([STATES, ACTIONS])
+        layers: [516, 256, 128, 64]
+        activations: relu
+    output: ONE
+
+  target_critic_2:  # see deterministic_model parameters
+    class: DeterministicMixin
+    clip_actions: True
+    network:
+      - name: net
+        input: concatenate([STATES, ACTIONS])
+        layers: [516, 256, 128, 64]
+        activations: relu
+    output: ONE
+
+  critic_1:  # see deterministic_model parameters
+    class: DeterministicMixin
+    clip_actions: True
+    network:
+      - name: net
+        input: concatenate([STATES, ACTIONS])
+        layers: [516, 256, 128, 64]
+        activations: relu
+    output: ONE
+
+  critic_2:  # see deterministic_model parameters
+    class: DeterministicMixin
+    clip_actions: True
+    network:
+      - name: net
+        input: concatenate([STATES, ACTIONS])
+        layers: [516, 256, 128, 64]
+        activations: relu
+    output: ONE
+
+
+# Rollout memory
+# https://skrl.readthedocs.io/en/latest/api/memories/random.html
+memory:
+  class: RandomMemory
+  memory_size: 1000  # automatically determined (same as agent:rollouts)
+
+
+# SAC agent configuration (field names are from SAC_DEFAULT_CONFIG)
+# https://skrl.readthedocs.io/en/latest/api/agents/sac.html
+agent:
+  class: SAC
+  rollouts: 32
+  gradient_steps: 1            # gradient steps
+  batch_size: 1000             # training batch size
+
+  discount_factor: 0.99        # discount factor (gamma)
+  polyak: 0.00005                # soft update hyperparameter (tau)
+
+  actor_learning_rate: 0.0001    # actor learning rate
+  critic_learning_rate: 0.0001   # critic learning rate
+  learning_rate_scheduler: null       # learning rate scheduler class (see torch.optim.lr_scheduler)
+  learning_rate_scheduler_kwargs: {}   # learning rate scheduler's kwargs (e.g. {"step_size": 1e-3})
+
+  state_preprocessor: RunningStandardScaler # state preprocessor class (see skrl.resources.preprocessors)
+  state_preprocessor_kwargs: null # state preprocessor's kwargs (e.g. {"size": env.observation_space})       
+
+  random_timesteps: 0          # random exploration steps
+  learning_starts: 0           # learning starts after this many steps
+
+  grad_norm_clip: 1.0            # clipping coefficient for the norm of the gradients
+
+  learn_entropy: True     # learn entropy
+  entropy_learning_rate: 0.001  # entropy learning rate
+  initial_entropy_value: 0.2   # initial entropy value
+  target_entropy: null         # target entropy
+
+  rewards_shaper: null       # rewards shaping function: Callable(reward, timestep, timesteps) -> reward
+
+  mixed_precision: False       # enable automatic mixed precision for higher performance
+
+  # logging and checkpoint
+  experiment:
+    directory: "pouring"
+    experiment_name: ""
+    write_interval: auto
+    checkpoint_interval: auto
+
+
+# Sequential trainer
+# https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
+trainer:
+  class: SequentialTrainer
+  timesteps: 20000
+  environment_info: log

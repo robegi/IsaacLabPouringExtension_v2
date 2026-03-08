@@ -28,15 +28,15 @@ from isaaclab.controllers import DifferentialIKControllerCfg
 @configclass
 class PouringEnvCfg(DirectRLEnvCfg):
     # env
-    decimation = 2
+    decimation = 5
     episode_length_s = 10
     # - spaces definition
-    action_space = 6
-    observation_space = 19
+    action_space = 4
+    observation_space = 32
     state_space = 0
 
     # simulation
-    sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
+    sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=1)
 
     # path
     CURRENT_PATH = os.path.dirname(os.path.realpath(__file__))
@@ -172,12 +172,12 @@ class PouringEnvCfg(DirectRLEnvCfg):
     # reward scales
     inside_weight = 1.0
     outside_weight = -1.0
-    source_pos_weight = 0.
+    source_pos_weight = -1.0
     source_ground_weight = -0.
     source_vel_weight = -0.00
     joint_vel_weight = 0.
-    actions_weight = -0.1
+    actions_weight = -0.0
 
     # Action scales
-    action_scale_lin = 0.1
+    action_scale_lin = 0.01
     action_scale_rot = 0.1
