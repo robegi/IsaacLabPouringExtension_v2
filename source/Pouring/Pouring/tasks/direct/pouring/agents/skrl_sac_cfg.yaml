@@ -16,7 +16,7 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [516, 256, 128, 64]
+        layers: [512, 128, 32]
         activations: relu
     output: ACTIONS
 
@@ -26,7 +26,7 @@ models:
     network:
       - name: net
         input: concatenate([STATES, ACTIONS])
-        layers: [516, 256, 128, 64]
+        layers: [512, 128, 32]
         activations: relu
     output: ONE
 
@@ -36,7 +36,7 @@ models:
     network:
       - name: net
         input: concatenate([STATES, ACTIONS])
-        layers: [516, 256, 128, 64]
+        layers: [512, 128, 32]
         activations: relu
     output: ONE
 
@@ -46,7 +46,7 @@ models:
     network:
       - name: net
         input: concatenate([STATES, ACTIONS])
-        layers: [516, 256, 128, 64]
+        layers: [512, 128, 32]
         activations: relu
     output: ONE
 
@@ -56,7 +56,7 @@ models:
     network:
       - name: net
         input: concatenate([STATES, ACTIONS])
-        layers: [516, 256, 128, 64]
+        layers: [512, 128, 32]
         activations: relu
     output: ONE
 
@@ -77,7 +77,7 @@ agent:
   batch_size: 1000             # training batch size
 
   discount_factor: 0.99        # discount factor (gamma)
-  polyak: 0.00005                # soft update hyperparameter (tau)
+  polyak: 0.00001                # soft update hyperparameter (tau)
 
   actor_learning_rate: 0.0001    # actor learning rate
   critic_learning_rate: 0.0001   # critic learning rate
@@ -105,13 +105,13 @@ agent:
   experiment:
     directory: "pouring"
     experiment_name: ""
-    write_interval: auto
-    checkpoint_interval: auto
+    write_interval: 100
+    checkpoint_interval: 100
 
 
 # Sequential trainer
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
 trainer:
   class: SequentialTrainer
-  timesteps: 20000
+  timesteps: 100000
   environment_info: log
