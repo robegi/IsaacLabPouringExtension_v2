@@ -32,7 +32,9 @@ class PouringEnvCfg(DirectRLEnvCfg):
     episode_length_s = 10
     # - spaces definition
     action_space = 4
-    observation_space = 32
+    n_prev_obs = 1 # Number of previous timesteps to include in the observations
+    observation_space_base = 24
+    observation_space = observation_space_base * n_prev_obs
     state_space = 0
 
     # simulation
@@ -149,25 +151,24 @@ class PouringEnvCfg(DirectRLEnvCfg):
         ),
     )
 
-    # fluid object
-    spawn_pos_fluid = Gf.Vec3f(0.0, 0.0, 4.0)  # Lower position for the spawn
-
-    # Add liquid configuration parameters
-    # Direct spawn
+    # fluid object configuration parameters
     liquidCfg = FluidObjectCfg()
+    
+    # Direct spawn
     liquidCfg.numParticlesX = 8
     liquidCfg.numParticlesY = 8
     liquidCfg.numParticlesZ = 44
     liquidCfg.density = 0.0
     liquidCfg.particle_mass = 0.001
-    liquidCfg.particleSpacing = 0.005
+    liquidCfg.particleSpacing = 0.01
     liquidCfg.viscosity = 0.91
 
-    # Spawn position of the center of the base of the fluid
-    spawn_pos_fluid = spawn_pos_glass + Gf.Vec3f(0.0,0,0.05)
+    # Sampled spawn, radius and height of the cylindrical volume
+    liquidCfg.radius = 0.04
+    liquidCfg.height = 0.1
 
-    # Fill levels inside the source container
-    particles_init_pos_list = ["particle_init_pos_high"]
+    # Spawn position of the center the base of the fluid
+    spawn_pos_fluid = spawn_pos_glass + Gf.Vec3f(0, 0, 0.05 + liquidCfg.height/2)
 
     # reward scales
     inside_weight = 1.0
@@ -180,4 +181,4 @@ class PouringEnvCfg(DirectRLEnvCfg):
 
     # Action scales
     action_scale_lin = 0.01
-    action_scale_rot = 0.1
+    action_scale_rot = 0.05

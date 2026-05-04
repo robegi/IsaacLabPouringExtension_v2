@@ -1,5 +1,5 @@
 from omni.physx.scripts import physicsUtils, particleUtils, utils
-from pxr import Usd, UsdLux, UsdGeom, Sdf, Gf, Vt, UsdPhysics, PhysxSchema
+from pxr import Usd, UsdLux, UsdGeom, Sdf, Gf, Vt, UsdPhysics, PhysxSchema, UsdShade
 import omni.physx.bindings._physx as physx_settings_bindings
 import omni.timeline
 import numpy as np
@@ -10,19 +10,23 @@ from typing import Union
 
 class FluidObjectCfg():
 
-    # Number of particles along the hoorizontal and vertical axes (for direct spawn)
-    numParticlesX: int
-    numParticlesY: int
-    numParticlesZ: int
-    particleSpacing: float
-     
+    # Number of particles along the horizontal and vertical axes (for direct spawn)
+    numParticlesX: int = 5
+    numParticlesY: int = 5
+    numParticlesZ: int = 5
+
+    # Cylinder dimension (for sampled spawn)
+    radius: float = 0.1
+    height: float = 0.4
+
     # Fluid properties
-    particle_mass : float
-    density : float
-    viscosity: float 
+    particle_mass : float = 0.001
+    density : float = 0.0
+    viscosity: float = 0.91
+    particleSpacing: float = 0.005
 
     # Environment parameters
-    num_envs: int
+    num_envs: int = 1
 
      
 
@@ -30,9 +34,9 @@ class FluidObject():
 
     cfg: FluidObjectCfg
 
-    def __init__(self, cfg: FluidObjectCfg, lower_pos: Gf.Vec3f):
+    def __init__(self, cfg: FluidObjectCfg, pos: Gf.Vec3f):
         self.cfg = cfg
-        self.lower_pos = lower_pos # Lower position for the spawn
+        self.lower_pos = pos # Lower position for the spawn
         
         # Scene infos (Default values)
         context = omni.usd.get_context()
@@ -42,12 +46,16 @@ class FluidObject():
         self.default_prim_path = self.stage.GetDefaultPrim().GetPath()
         self.scenePath = Sdf.Path("/physicsScene")
 
-        # Data from config
-        self.particles_num = self.cfg.numParticlesX * self.cfg.numParticlesY * self.cfg.numParticlesZ
+        # Initialize internal variables 
+        self.initial_particles_pos: torch.Tensor | None = None
+        self.initial_particles_vel: torch.Tensor | None = None
+        self.num_particles: int | None = None
 
-    def spawn_fluid(self):
-            # Spawns the fluid particles in the environment 0
-            env_id = 0
+
+    def spawn_fluid_direct(self, env_id: int = 0):
+            ###
+            # Spawns the fluid particles (in the environment 0 by default)
+            ###
             
             # Particle System
             self.particleSystemPath = self.default_prim_path.AppendChild("particleSystem")
@@ -160,17 +168,96 @@ class FluidObject():
             # visibility_attribute = self.particlesPrim.GetVisibilityAttr()
             # visibility_attribute.Set("invisible")
 
-            # Saves the particles' initial state 
+            # Saves particle data
             self.initial_particles_pos = self.get_particles_position([0])
             self.initial_particles_vel = self.get_particles_velocity([0])
+            self.num_particles = self.cfg.numParticlesX * self.cfg.numParticlesY * self.cfg.numParticlesZ
 
+    def spawn_fluid_sampler(self, env_id: int = 0):
+        ###
+        # Spawns fluid particles by sampling a mesh (in environment 0 by default)
+        # Code reference in the isaac sim particle sampler demo
+        ###
+
+        # Empty internal variables
+        self.initial_particles_pos = None
+        self.initial_particles_vel = None
+        self.num_particles = None
+
+        # configure and create particle system
+        particle_system_path = self.default_prim_path.AppendChild("particleSystem")
+        particle_system = PhysxSchema.PhysxParticleSystem.Define(self.stage, particle_system_path)
+        particle_system.CreateSimulationOwnerRel().SetTargets([self.scenePath])
+        # The simulation determines the other offsets from the particle contact offset
+        Particle_Contact_Offset = self.cfg.particleSpacing # From cfg data
+        particle_system.CreateParticleContactOffsetAttr().Set(Particle_Contact_Offset)
+        # Limit particle velocity for better collision detection
+        particle_system.CreateMaxVelocityAttr().Set(250.0)
+
+        # create particle material and assign it to the system:
+        particle_material_path = self.default_prim_path.AppendChild("particleMaterial")
+        particleUtils.add_pbd_particle_material(self.stage, particle_material_path)
+        physicsUtils.add_physics_material_to_prim(
+            self.stage, self.stage.GetPrimAtPath(particle_system_path), particle_material_path
+        )
+
+        # create a cylinder mesh that shall be sampled:
+        # cylinder_mesh_path = Sdf.Path(omni.usd.get_stage_next_free_path(self.stage, "/Cylinder", True))
+        cylinder_mesh_path = Sdf.Path(f"/World/envs/env_{0}/Cylinder")
+        cylinder_resolution = (
+            10  # resolution can be low because we'll sample the surface / volume only irrespective of the vertex count
+        )
+        omni.kit.commands.execute(
+            "CreateMeshPrim", prim_type="Cylinder", u_patches=cylinder_resolution, v_patches=cylinder_resolution, select_new_prim=False,
+            prim_path = cylinder_mesh_path
+        )
+        cylinder_mesh = UsdGeom.Mesh.Get(self.stage, cylinder_mesh_path)
+        physicsUtils.set_or_add_scale_op(cylinder_mesh, Gf.Vec3f(self.cfg.radius, self.cfg.radius, self.cfg.height))
+        physicsUtils.set_or_add_translate_op(cylinder_mesh, self.lower_pos) # Translate to the spawn position
+
+        # configure target particle set:
+        # particle_points_path = self.default_prim_path.AppendChild("sampledParticles")
+        particle_points_path = Sdf.Path(f"/World/envs/env_{env_id}/particles")
+        points = UsdGeom.Points.Define(self.stage, particle_points_path)
+        # add render material:
+        material_path = self.create_pbd_material("OmniPBR")
+        omni.kit.commands.execute(
+            "BindMaterialCommand", prim_path=particle_points_path, material_path=material_path, strength=None
+        )
+
+        particle_set_api = PhysxSchema.PhysxParticleSetAPI.Apply(points.GetPrim())
+        PhysxSchema.PhysxParticleAPI(particle_set_api).CreateParticleSystemRel().SetTargets([particle_system_path])
+
+        # compute particle sampler sampling distance
+        # use particle fluid restoffset to determine sampler distance, using same formula as simulation, see
+        # https://docs.omniverse.nvidia.com/prod_extensions/prod_extensions/ext_physics.html#offset-autocomputation
+        fluid_rest_offset = 0.99 * 0.6 * Particle_Contact_Offset
+        particle_sampler_distance = 2.0 * fluid_rest_offset
+
+        # reference the particle set in the sampling api
+        sampling_api = PhysxSchema.PhysxParticleSamplingAPI.Apply(cylinder_mesh.GetPrim())
+        sampling_api.CreateParticlesRel().AddTarget(particle_points_path)
+        sampling_api.CreateSamplingDistanceAttr().Set(particle_sampler_distance)
+        sampling_api.CreateMaxSamplesAttr().Set(5e5)
+        sampling_api.CreateVolumeAttr().Set(True)
+
+        # apply isosurface params
+        isosurfaceAPI = PhysxSchema.PhysxParticleIsosurfaceAPI.Apply(particle_system.GetPrim())
+        isosurfaceAPI.CreateIsosurfaceEnabledAttr().Set(True)
+        isosurfaceAPI.CreateMaxVerticesAttr().Set(1024 * 1024)
+        isosurfaceAPI.CreateMaxTrianglesAttr().Set(2 * 1024 * 1024)
+        isosurfaceAPI.CreateMaxSubgridsAttr().Set(1024 * 4)
+        isosurfaceAPI.CreateGridSpacingAttr().Set(fluid_rest_offset * 1.5)
+        isosurfaceAPI.CreateSurfaceDistanceAttr().Set(fluid_rest_offset * 1.6)
+        isosurfaceAPI.CreateGridFilteringPassesAttr().Set("")
+        isosurfaceAPI.CreateGridSmoothingRadiusAttr().Set(fluid_rest_offset * 2)
 
     def get_particles_position(self, env_ids: Union[list[int], None] = None) -> torch.Tensor:
         # Gets particles' positions in the input environment and velocities and outputs them as torch tensors
         if env_ids is None:
             env_ids = range(self.cfg.num_envs)
 
-        particles_pos = torch.zeros((len(env_ids), self.particles_num, 3), device='cuda')
+        particles_pos = torch.zeros((len(env_ids), self.num_particles, 3), device='cuda')
         for i in env_ids:
             particles = UsdGeom.Points(self.stage.GetPrimAtPath(Sdf.Path(f"/World/envs/env_{i}/particles")))
             particles_pos[i] = torch.from_numpy(np.asarray(particles.GetPointsAttr().Get())).cuda()
@@ -182,7 +269,7 @@ class FluidObject():
         if env_ids is None:
             env_ids = range(self.cfg.num_envs)
 
-        particles_vel = torch.zeros((len(env_ids), self.particles_num, 3), device='cuda')
+        particles_vel = torch.zeros((len(env_ids), self.num_particles, 3), device='cuda')
         # Cycle through all environments
         for i in env_ids:
             particles = UsdGeom.Points(self.stage.GetPrimAtPath(Sdf.Path(f"/World/envs/env_{i}/particles")))
@@ -210,3 +297,34 @@ class FluidObject():
             else:
                 particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(self.initial_particles_vel.cpu().numpy()))
 
+    def create_pbd_material(self, mat_name: str, color_rgb: Gf.Vec3f = Gf.Vec3f(0.2, 0.2, 0.8)) -> Sdf.Path:
+        # create material for particles
+        create_list = []
+        omni.kit.commands.execute(
+            "CreateAndBindMdlMaterialFromLibrary",
+            mdl_name="OmniPBR.mdl",
+            mtl_name="OmniPBR",
+            mtl_created_list=create_list,
+            bind_selected_prims=False,
+            select_new_prim=False,
+        )
+        target_path = "/World/Looks/" + mat_name
+        if create_list[0] != target_path:
+            omni.kit.commands.execute("MovePrims", paths_to_move={create_list[0]: target_path})
+        shader = UsdShade.Shader.Get(self.stage, target_path + "/Shader")
+        shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(color_rgb)
+        return Sdf.Path(target_path)
+    
+
+    def initialize_fluid_data(self, env_0_origin: torch.Tensor = torch.tensor([0, 0, 0], device='cuda')):
+        # Fill internal fluid data after the fluid is spawned if not initialized
+        if self.initial_particles_pos is None:
+            # Number of particles
+            particles = UsdGeom.Points(self.stage.GetPrimAtPath(Sdf.Path(f"/World/envs/env_{0}/particles")))
+            self.initial_particles_pos = torch.from_numpy(np.asarray(particles.GetPointsAttr().Get())).cuda()
+            self.initial_particles_vel = torch.from_numpy(np.asarray(particles.GetVelocitiesAttr().Get())).cuda()
+            self.num_particles = self.initial_particles_pos.shape[0]
+
+            # Initial positions and velocities
+            self.initial_particles_pos = self.get_particles_position([0]) - env_0_origin # Translate to the environment 0 origin
+            self.initial_particles_vel = self.get_particles_velocity([0])

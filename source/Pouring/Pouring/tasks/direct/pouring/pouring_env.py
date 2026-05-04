@@ -100,20 +100,8 @@ class PouringEnv(DirectRLEnv):
 
         # Liquid
         self.cfg.liquidCfg.num_envs = self.num_envs
-        self.liquid = FluidObject(cfg=self.cfg.liquidCfg, lower_pos=self.cfg.spawn_pos_fluid)
-        self.liquid.spawn_fluid()  # Spawn only in env 0, it is replicated automatically
-
-        # # Initial particle position, from saved file
-        self.liquid_init_pos = list()
-        self.liquid_init_vel = list()
-
-        for i in range(len(self.cfg.particles_init_pos_list)):
-            self.liquid_init_pos.append(torch.load(f"{self.cfg.CURRENT_PATH}/usd_models/{self.cfg.particles_init_pos_list[i]}.pt").cuda())
-            self.liquid_init_pos[i] += torch.ones_like(self.liquid_init_pos[i], device=self.device)*torch.tensor([0, 0, 0.01], device=self.device)
-            self.liquid_init_vel.append(torch.zeros_like(self.liquid_init_pos[i], device=self.device))
-
-        # Particles
-        self.particle_pos = torch.ones((self.num_envs, self.liquid.particles_num, 3)).to(self.device)
+        self.liquid = FluidObject(cfg=self.cfg.liquidCfg, pos=self.cfg.spawn_pos_fluid)
+        self.liquid.spawn_fluid_sampler() # Spawn only in env 0, it is replicated automatically
 
         # Target on the finger actuators to hold the glass
         self.ee_finger_start = torch.tensor([0.5, 0.5], device=self.device).unsqueeze(0) # Initial finger position for resetting
@@ -123,9 +111,16 @@ class PouringEnv(DirectRLEnv):
         self.robot_dof_targets = torch.tensor(list(self._robot.cfg.init_state.joint_pos.values()), device=self.device)
 
         # Initialize variables to store useful quantities
-        self.spilled_fraction = torch.zeros((self.num_envs, self.liquid.particles_num, 3), device = self.device)
-        self.inside_fraction = torch.zeros((self.num_envs, self.liquid.particles_num, 3), device = self.device)
+        self.spilled_fraction = torch.zeros((self.num_envs, 1), device = self.device)
+        self.inside_fraction = torch.zeros((self.num_envs, 1), device = self.device)
         self.container_pos = torch.zeros((self.num_envs, 3), device = self.device)
+
+        # Initialize observation buffers
+        self.obs_0 = torch.zeros((self.num_envs, self.cfg.observation_space_base), device=self.device)
+        self.obs_1 = torch.zeros((self.num_envs, self.cfg.observation_space_base), device=self.device)
+        self.obs_2 = torch.zeros((self.num_envs, self.cfg.observation_space_base), device=self.device)
+        self.obs_3 = torch.zeros((self.num_envs, self.cfg.observation_space_base), device=self.device)
+        self.obs_tot = torch.zeros((self.num_envs, self.cfg.observation_space), device=self.device)
 
         # Marker on the end effector and the desired pose
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -226,6 +221,9 @@ class PouringEnv(DirectRLEnv):
         ee_pos_b, ee_quat_b = subtract_frame_transforms(
             root_pose_w[:, 0:3], root_pose_w[:, 3:7], ee_pose_w[:, 0:3], ee_pose_w[:, 3:7]
         )
+
+        # EE velocity
+        ee_vel_w = self._robot.data.body_vel_w[:, self.robot_entity_cfg.body_ids[0]]
         
         # Container position in plane (local frame)
         self.container_pos = self._container.data.root_pos_w[:,:2] - self.scene.env_origins[:,:2]
@@ -236,15 +234,14 @@ class PouringEnv(DirectRLEnv):
                                                             container_base = self.container_base_thickness,
                                                             container_height = self.container_height,
                                                             container_radius = self.container_radius,
-                                                            total_particles = self.liquid.particles_num)
+                                                            total_particles = self.liquid.num_particles)
         
         # Concatenate observations
         obs = torch.cat(
             (
-                joint_pos_scaled,
-                joint_vel,
                 ee_pos_b,
                 ee_quat_b,
+                ee_vel_w,
                 self.ee_goal,
                 self.container_pos,
                 self.spilled_fraction,
@@ -271,7 +268,7 @@ class PouringEnv(DirectRLEnv):
         reward_source_pos = torch.where(source_pos[:,2]<self.container_height + 0.03, 1.0, .0).unsqueeze(1)*self.cfg.source_pos_weight
 
         total_reward = reward_inside + reward_outside + reward_actions + reward_source_pos
-
+        # print(total_reward)
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -320,7 +317,8 @@ class PouringEnv(DirectRLEnv):
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         # Resets fluid
-        self.liquid.set_particles_position_and_velocity(env_ids = env_ids, particles_pos = self.liquid_init_pos[0], particles_vel = self.liquid_init_vel[0])
+        self.liquid.initialize_fluid_data(env_0_origin = self.scene.env_origins[0]) # Only runs the first time to initialize internal variables
+        self.liquid.set_particles_position_and_velocity(env_ids = env_ids)
 
         # Testing variables reset
         self.counter = 0
