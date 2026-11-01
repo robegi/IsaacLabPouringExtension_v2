@@ -28,8 +28,8 @@ from isaaclab.controllers import DifferentialIKControllerCfg
 @configclass
 class PouringEnvCfg(DirectRLEnvCfg):
     # env
-    decimation = 5
-    episode_length_s = 10
+    decimation = 2
+    episode_length_s = 5
     # - spaces definition
     action_space = 4
     n_prev_obs = 1 # Number of previous timesteps to include in the observations
@@ -38,7 +38,7 @@ class PouringEnvCfg(DirectRLEnvCfg):
     state_space = 0
 
     # simulation
-    sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=1)
+    sim: SimulationCfg = SimulationCfg(dt=1 / 200, render_interval=decimation)
 
     # path
     CURRENT_PATH = os.path.dirname(os.path.realpath(__file__))
@@ -151,24 +151,30 @@ class PouringEnvCfg(DirectRLEnvCfg):
         ),
     )
 
-    # fluid object configuration parameters
-    liquidCfg = FluidObjectCfg()
-    
-    # Direct spawn
-    liquidCfg.numParticlesX = 8
-    liquidCfg.numParticlesY = 8
-    liquidCfg.numParticlesZ = 44
-    liquidCfg.density = 0.0
-    liquidCfg.particle_mass = 0.001
-    liquidCfg.particleSpacing = 0.01
-    liquidCfg.viscosity = 0.91
-
-    # Sampled spawn, radius and height of the cylindrical volume
-    liquidCfg.radius = 0.04
-    liquidCfg.height = 0.1
+    # Fluid Object configuration parameters (sampled spawn)
+    fluid_cfg = FluidObjectCfg(
+        prim_path = "/World/envs/env_.*",
+        sampled_shape = "cylinder", # Base isaac sim prims like "cylinder", "cube", "sphere" can be used for sampling the fluid
+        scale_x = 0.05, # Sampled prim scale along x-axis
+        scale_y = 0.05, # Sampled prim scale along y-axis
+        scale_z = 0.2, # Sampled prim scale along z-axis
+        particle_mass = 0.001,
+        density = 0.0,
+        viscosity = 0.1,
+        cohesion = 5.0,
+        surface_tension = 0.02,
+        friction = 1.0,
+        damping = 0.9,
+        hidden_particles = True,
+        anisotropy = True,
+        smoothing = True,
+        isosurface = True,
+        transparency = True,
+        particleSpacing = 0.01,
+    )
 
     # Spawn position of the center the base of the fluid
-    spawn_pos_fluid = spawn_pos_glass + Gf.Vec3f(0, 0, 0.05 + liquidCfg.height/2)
+    spawn_pos_fluid = spawn_pos_glass + Gf.Vec3f(0, 0, 0.05 + fluid_cfg.scale_z/2)
 
     # reward scales
     inside_weight = 1.0
@@ -177,8 +183,8 @@ class PouringEnvCfg(DirectRLEnvCfg):
     source_ground_weight = -0.
     source_vel_weight = -0.00
     joint_vel_weight = 0.
-    actions_weight = -0.0
+    actions_weight = -0.01
 
     # Action scales
     action_scale_lin = 0.01
-    action_scale_rot = 0.05
+    action_scale_rot = 0.1

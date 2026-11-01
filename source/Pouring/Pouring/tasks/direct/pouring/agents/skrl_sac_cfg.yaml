@@ -16,7 +16,7 @@ models:
     network:
       - name: net
         input: STATES
-        layers: [512, 128, 32]
+        layers: [32, 32]
         activations: relu
     output: ACTIONS
 
@@ -26,7 +26,7 @@ models:
     network:
       - name: net
         input: concatenate([STATES, ACTIONS])
-        layers: [512, 128, 32]
+        layers: [32, 32]
         activations: relu
     output: ONE
 
@@ -36,7 +36,7 @@ models:
     network:
       - name: net
         input: concatenate([STATES, ACTIONS])
-        layers: [512, 128, 32]
+        layers: [32, 32]
         activations: relu
     output: ONE
 
@@ -46,7 +46,7 @@ models:
     network:
       - name: net
         input: concatenate([STATES, ACTIONS])
-        layers: [512, 128, 32]
+        layers: [32, 32]
         activations: relu
     output: ONE
 
@@ -56,7 +56,7 @@ models:
     network:
       - name: net
         input: concatenate([STATES, ACTIONS])
-        layers: [512, 128, 32]
+        layers: [32, 32]
         activations: relu
     output: ONE
 
@@ -65,22 +65,22 @@ models:
 # https://skrl.readthedocs.io/en/latest/api/memories/random.html
 memory:
   class: RandomMemory
-  memory_size: 1000  # automatically determined (same as agent:rollouts)
+  memory_size: 256
 
 
 # SAC agent configuration (field names are from SAC_DEFAULT_CONFIG)
 # https://skrl.readthedocs.io/en/latest/api/agents/sac.html
 agent:
   class: SAC
-  rollouts: 32
-  gradient_steps: 1            # gradient steps
-  batch_size: 1000             # training batch size
+  # rollouts: 64
+  gradient_steps: 2           # gradient steps
+  batch_size: 256             # training batch size
 
   discount_factor: 0.99        # discount factor (gamma)
   polyak: 0.00001                # soft update hyperparameter (tau)
 
-  actor_learning_rate: 0.0001    # actor learning rate
-  critic_learning_rate: 0.0001   # critic learning rate
+  actor_learning_rate: 0.00001    # actor learning rate
+  critic_learning_rate: 0.00001   # critic learning rate
   learning_rate_scheduler: null       # learning rate scheduler class (see torch.optim.lr_scheduler)
   learning_rate_scheduler_kwargs: {}   # learning rate scheduler's kwargs (e.g. {"step_size": 1e-3})
 
@@ -93,9 +93,9 @@ agent:
   grad_norm_clip: 1.0            # clipping coefficient for the norm of the gradients
 
   learn_entropy: True     # learn entropy
-  entropy_learning_rate: 0.001  # entropy learning rate
-  initial_entropy_value: 0.2   # initial entropy value
-  target_entropy: null         # target entropy
+  entropy_learning_rate: 0.01  # entropy learning rate
+  initial_entropy_value: 0.2  # initial entropy value
+  target_entropy: 0.1        # target entropy
 
   rewards_shaper: null       # rewards shaping function: Callable(reward, timestep, timesteps) -> reward
 

@@ -25,7 +25,7 @@ from isaaclab.assets import RigidObject
 from isaaclab.controllers import DifferentialIKController
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz, quat_mul
+from isaaclab.utils.math import subtract_frame_transforms, quat_from_euler_xyz, quat_mul, euler_xyz_from_quat
 from isaaclab.markers.config import FRAME_MARKER_CFG
 
 class PouringEnv(DirectRLEnv):
@@ -56,10 +56,6 @@ class PouringEnv(DirectRLEnv):
         # Use device without forcing anything
         physx_interface = acquire_physx_interface()
         physx_interface.overwrite_gpu_setting(-1)
-
-        # Set translucency to render transparent materials
-        settings = carb.settings.get_settings()
-        settings.set("/rtx/translucency/enabled", True)
 
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
@@ -97,11 +93,13 @@ class PouringEnv(DirectRLEnv):
         self.delta_rot = torch.tensor([0], device = self.device).expand(self.num_envs, -1)
         self.delta_pos_limit_low = torch.tensor([0.3, -0.5, 0], device = self.device)
         self.delta_pos_limit_up = torch.tensor([0.8, 0.5, 0.5], device = self.device)
+        self.delta_rot_limit_low = torch.tensor([-2*math.pi, -2*math.pi, -100], device = self.device)
+        self.delta_rot_limit_up = torch.tensor([2*math.pi, 2*math.pi, math.pi*3/4*10], device = self.device)
 
         # Liquid
-        self.cfg.liquidCfg.num_envs = self.num_envs
-        self.liquid = FluidObject(cfg=self.cfg.liquidCfg, pos=self.cfg.spawn_pos_fluid)
-        self.liquid.spawn_fluid_sampler() # Spawn only in env 0, it is replicated automatically
+        self.cfg.fluid_cfg.num_envs = self.num_envs # Define number of envs in the fluid config, it is needed for the internal methods
+        self.liquid = FluidObject(cfg=self.cfg.fluid_cfg)
+        self.liquid.spawn_fluid_sampler(pos=self.cfg.spawn_pos_fluid) # Spawn only in env 0, it is replicated automatically
 
         # Target on the finger actuators to hold the glass
         self.ee_finger_start = torch.tensor([0.5, 0.5], device=self.device).unsqueeze(0) # Initial finger position for resetting
@@ -158,8 +156,10 @@ class PouringEnv(DirectRLEnv):
         
         # Apply actions
         ee_pos = self.ee_goal[:,:3] + self.delta_pos
-        ee_pos = ee_pos.clamp(self.delta_pos_limit_low, self.delta_pos_limit_up)
+        ee_pos = ee_pos.clamp(self.delta_pos_limit_low, self.delta_pos_limit_up) # Limit translations
         ee_rot = quat_mul(self.ee_goal[:, 3:], quat_from_euler_xyz(torch.tensor(0), torch.tensor(0), self.delta_rot))
+        ee_rot = torch.stack(euler_xyz_from_quat(ee_rot)).T.clamp(self.delta_rot_limit_low, self.delta_rot_limit_up) # Limit rotations
+        ee_rot = quat_from_euler_xyz(ee_rot[:,0], ee_rot[:,1], ee_rot[:,2])
         self.ee_goal = torch.cat((ee_pos, ee_rot), dim=1) 
         
         ###
@@ -202,8 +202,9 @@ class PouringEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
 
         # Get particles data, once for all methods
-        self.particle_pos=self.liquid.get_particles_position()
-        
+        self.particle_pos=self.liquid.get_particles_pos()
+        self.particle_vel=self.liquid.get_particles_vel()
+
         # Scaled joint positions (exclude fingers)
         joint_pos_scaled = (
             2.0
@@ -246,6 +247,8 @@ class PouringEnv(DirectRLEnv):
                 self.container_pos,
                 self.spilled_fraction,
                 self.inside_fraction,
+                # self.particle_pos.reshape(self.num_envs, -1),
+                # self.particle_vel.reshape(self.num_envs, -1)
             ),
             dim=-1,
         )
@@ -311,15 +314,15 @@ class PouringEnv(DirectRLEnv):
         # Reset the container
         container_init_pos = self._container.data.default_root_state.clone()[env_ids]
         container_init_pos[:,:3] = container_init_pos[:,:3] + self.scene.env_origins[env_ids]
-        lower_bound = torch.tensor([0,-0.1,0],device=self.device)
-        upper_bound = torch.tensor([0,0.1,0],device=self.device)
+        lower_bound = torch.tensor([0,-0.05,0],device=self.device)
+        upper_bound = torch.tensor([0,0.05,0],device=self.device)
         container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         # Resets fluid
-        self.liquid.initialize_fluid_data(env_0_origin = self.scene.env_origins[0]) # Only runs the first time to initialize internal variables
-        self.liquid.set_particles_position_and_velocity(env_ids = env_ids)
-
+        self.liquid.initialize_fluid_data(base_env_origin = self.scene.env_origins[0]) # Only runs the first time to initialize internal variables
+        self.liquid.set_particles_pos_and_vel(env_ids = env_ids)
+        
         # Testing variables reset
         self.counter = 0
 
